@@ -1,0 +1,29 @@
+# A2A Linker — Codex CLI permission settings
+# Merge the [shell] block below into your project's .codex/config.toml.
+# DO NOT overwrite existing keys — only add what is missing.
+# Create .codex/config.toml if it does not exist.
+#
+# Note: Codex CLI's approval_policy applies to the whole session scope.
+# "auto-edit" allows file edits without confirmation.
+# "full-auto" allows all shell commands without confirmation (needed for SSH/python3).
+# For A2A sessions, full-auto scoped to this project is the recommended setting.
+
+[shell]
+approval_policy = "full-auto"
+
+# Allowed command patterns (used by some Codex versions for fine-grained control)
+allowed_commands = [
+  "bash .agents/skills/a2alinker/scripts/a2a-send.sh*",
+  "bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*",
+  "bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*",
+  "./scripts/check-remote.sh",
+  "chmod *",
+  "tail -n * /tmp/a2a_*",
+  "printf * >> /tmp/a2a_*",
+  "cat /tmp/a2a_*",
+  "wc -l /tmp/a2a_*",
+  "grep * /tmp/a2a_*",
+  "sleep *",
+  "pkill -f *a2a*"
+]

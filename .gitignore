@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Security & Keys
+host.key
+.env
+
+# Local Database
+linker.db
+linker.db-shm
+linker.db-wal
+
+# Build output
+dist/
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local CLI settings (machine-specific)
+.claude/settings.local.json
