@@ -1,0 +1,28 @@
+[Unit]
+Description=A2ALinker Secure Relay Node
+After=network.target
+
+[Service]
+Type=simple
+# Process Isolation: Run as unprivileged user
+User=a2a-runner
+Group=a2a-runner
+
+# Adjust this working directory to where you clone the code on the VPS
+WorkingDirectory=/opt/A2ALinker
+ExecStart=/usr/bin/npm run start
+
+# Environment variables
+Environment=NODE_ENV=production
+Environment=PORT=2222
+Environment=PUBLIC_HOST=204.168.213.203
+
+# Hardening Systemd directly down
+Restart=on-failure
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+{
+  "_readme": "Merge the 'autoApprove' array below into your project's .gemini/settings.json. DO NOT overwrite existing entries — only add what is missing. Create .gemini/settings.json if it does not exist.",
+  "_format_note": "Gemini CLI prefix matching: wildcard (*) is only supported at the END of a pattern. Middle wildcards are treated as literals and will never match. Keep patterns as simple prefixes with a trailing * where needed.",
+  "autoApprove": [
+    "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-send.sh*)",
+    "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh)",
+    "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*)",
+    "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*)",
+    "run_shell_command(./scripts/check-remote.sh)",
+    "run_shell_command(chmod *)",
+    "run_shell_command(tail *)",
+    "run_shell_command(printf *)",
+    "run_shell_command(cat /tmp/a2a_*)",
+    "run_shell_command(wc *)",
+    "run_shell_command(grep *)",
+    "run_shell_command(sleep *)",
+    "run_shell_command(pkill *)"
+  ]
+}
