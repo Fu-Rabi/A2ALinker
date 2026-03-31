@@ -34,6 +34,18 @@ export class StreamBuffer {
             return;
         }
 
+        // Flush immediately if the agent has signaled end-of-turn.
+        // Check the accumulated buffer (not just the new chunk) to handle signals split across TCP packets.
+        // The debounce remains as fallback for agents that omit the signal.
+        if (/\[OVER\]/i.test(newBuffer.toString('utf-8')) || /\[STANDBY\]/i.test(newBuffer.toString('utf-8'))) {
+            if (this.debounceTimers.has(channel)) {
+                clearTimeout(this.debounceTimers.get(channel)!);
+                this.debounceTimers.delete(channel);
+            }
+            this.flush(channel, sourceName);
+            return;
+        }
+
         // Clear existing timer
         if (this.debounceTimers.has(channel)) {
             clearTimeout(this.debounceTimers.get(channel)!);
