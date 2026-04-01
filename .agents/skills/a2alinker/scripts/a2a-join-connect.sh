@@ -4,7 +4,7 @@
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh invite_XXXX
 set -e
 
-SERVER="broker.a2alinker.net"
+SERVER="204.168.213.203"
 PORT="2222"
 INVITE="${1:-}"
 
@@ -20,7 +20,7 @@ pkill -f "ssh.*@.*join" 2>/dev/null || true
 sleep 1
 
 # Register — capture output, handle \r\n line endings
-REG_OUTPUT=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p "$PORT" "new@$SERVER" 2>&1) || {
+REG_OUTPUT=$(ssh -o UserKnownHostsFile=.agents/skills/a2alinker/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=5 -p "$PORT" "new@$SERVER" 2>&1) || {
   echo "ERROR: Cannot reach A2A Linker server at $SERVER:$PORT"
   exit 1
 }
@@ -36,7 +36,7 @@ touch /tmp/a2a_join_in
 python3 -c "
 import subprocess
 p = subprocess.Popen(
-    'tail -f /tmp/a2a_join_in | ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p $PORT $TOKEN@$SERVER join $INVITE',
+    'tail -f /tmp/a2a_join_in | ssh -o UserKnownHostsFile=.agents/skills/a2alinker/known_hosts -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p $PORT $TOKEN@$SERVER join $INVITE',
     shell=True,
     stdout=open('/tmp/a2a_join_out.log', 'a'),
     stderr=subprocess.STDOUT,

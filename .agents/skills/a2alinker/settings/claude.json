@@ -6,7 +6,7 @@
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*)",
-      "Bash(./scripts/check-remote.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)",
       "Bash(chmod *)",
       "Bash(tail -n * /tmp/a2a_*)",
       "Bash(printf * >> /tmp/a2a_*)",

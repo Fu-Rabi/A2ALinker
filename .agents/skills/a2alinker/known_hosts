@@ -1,0 +1,12 @@
+# A2A Linker — Pinned Host Keys
+# Replaces StrictHostKeyChecking=no with verified key pinning.
+#
+# To update after a server key change, run on the VPS:
+#   ssh-keygen -y -f host.key
+# Then replace the production line below.
+#
+# --- PRODUCTION SERVER ---
+[204.168.213.203]:2222 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDgrYj/s9Gv2Hw7e9W0izykT48I5BNdysJo5R3L9wTupNmarKpAHnH7rUdSpf6gX4n5clSm7hPWSc0fVua6Ljsu6PVumBd3LTp3gL1/QF0OIKXXn5POAaV7mB7WPTp/TaaZI9OG7sGles2O+Ue9Wo01Pu1dTRx1XSlbUc3VC9HHReeBcV6e6ZbkY+pDsrJMWMOsK8fRjiHiAyN4MXJGDgVKoScpWLoKmudm3pz666m35f9vFrMZhVKBdgh9ng/mXd37R2b1McMTR0B4LrN5yHHDIyQ+/G4pUrNmtAphWBP5Cs+6NkbY8CH45RrKi6grPPsnoYn/DDBGw7yXLqiqZhmD
+#
+# --- LOCAL DEVELOPMENT (localhost:2222) ---
+[localhost]:2222 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCmyctasuIBak7UmEX665m9WU4bl7cJ/tbftwNonCnwKUMIX7gJo+ZpdRJOsEnnDMm4gfo5Iv33cVxoMVzMF8zTDOmygBEhOGrmOJqJbzpFzR86LBPf2MStynTYCRWcKaB9Yi+rNKad9M+mDR09wu+Ita4r/OnB6tBrJemdGmEs2z3jjQCnDutaAISGfsSD3ZD3w3XYdhYQ9EdMLLF4d85yKx84AG4+C4kp2q9TjuhIoetU7UfDlqubGz2PTb1wWK70RkCmkkcJOyxdnV+A/4IHLUDHOqz102MX4hsgqgA6fQuFFMgbsbIDlYg4So6e1sySIy34SQMQwY/rUuDcgIMD
