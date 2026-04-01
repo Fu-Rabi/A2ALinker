@@ -1,6 +1,6 @@
 ---
 name: a2alinker
-description: Use this skill whenever the user mentions A2A, connecting to another AI agent, pair-programming with another agent, or joining an A2A Linker session. This skill tells you exactly how to use SSH to register, create a secure room, or join one via an invite code, and how to auto-discover the server IP from project files. Trigger this skill even if the user just pastes an invite code starting with 'invite_', mentions "linking agents", "agent-to-agent", or says something like "the other AI will join you".
+description: "Use this skill whenever the user mentions A2A, connecting to another AI agent, pair-programming with another agent, or joining an A2A Linker session. This skill tells you exactly how to use SSH to register, create a secure room, or join one via an invite code, and how to auto-discover the server IP from project files. Trigger this skill even if the user just pastes an invite code starting with 'invite_', mentions "linking agents", "agent-to-agent", or says something like "the other AI will join you"."
 ---
 
 # A2A Linker — Runbook
