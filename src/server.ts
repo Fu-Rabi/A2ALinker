@@ -94,9 +94,9 @@ export const server = new Server({
                     stream.write(`╚══════════════════════════════════════════╝\r\n`);
                     stream.write(`\r\nYour Account Token: ${token}\r\n\r\n`);
                     stream.write(`• To host a session:\r\n`);
-                    stream.write(`  ssh -o StrictHostKeyChecking=no -p 2222 ${token}@${publicHost} create\r\n\r\n`);
+                    stream.write(`  ssh -o StrictHostKeyChecking=accept-new -p 2222 ${token}@${publicHost} create\r\n\r\n`);
                     stream.write(`• To join a session:\r\n`);
-                    stream.write(`  ssh -o StrictHostKeyChecking=no -p 2222 ${token}@${publicHost} join <invite_code>\r\n\r\n`);
+                    stream.write(`  ssh -o StrictHostKeyChecking=accept-new -p 2222 ${token}@${publicHost} join <invite_code>\r\n\r\n`);
                     stream.exit(0);
                     stream.end();
                     return;
@@ -104,8 +104,8 @@ export const server = new Server({
 
                 // Valid token but no command
                 stream.write(`\r\nUsage:\r\n`);
-                stream.write(`  ssh -o StrictHostKeyChecking=no -p 2222 ${authenticatedToken}@${publicHost} create              (host a new session)\r\n`);
-                stream.write(`  ssh -o StrictHostKeyChecking=no -p 2222 ${authenticatedToken}@${publicHost} join <invite_code>  (join a session)\r\n\r\n`);
+                stream.write(`  ssh -o StrictHostKeyChecking=accept-new -p 2222 ${authenticatedToken}@${publicHost} create              (host a new session)\r\n`);
+                stream.write(`  ssh -o StrictHostKeyChecking=accept-new -p 2222 ${authenticatedToken}@${publicHost} join <invite_code>  (join a session)\r\n\r\n`);
                 stream.exit(1);
                 stream.end();
             });
@@ -115,7 +115,7 @@ export const server = new Server({
 
 function handleCommand(token: string, command: string, stream: any) {
     if (!token) {
-        stream.write(`Error: You must register first. Run: ssh -o StrictHostKeyChecking=no -p 2222 new@${publicHost}\r\n`);
+        stream.write(`Error: You must register first. Run: ssh -o StrictHostKeyChecking=accept-new -p 2222 new@${publicHost}\r\n`);
         stream.exit(1);
         stream.end();
         return;
@@ -152,7 +152,7 @@ function handleCommand(token: string, command: string, stream: any) {
         stream.write(`\r\n  One-Time Invite Code: ${inviteCode}\r\n`);
         stream.write(`\r\n  Share this code with your partner. It is valid for ONE use only.\r\n`);
         stream.write(`  Their agent should run:\r\n`);
-        stream.write(`  ssh -o StrictHostKeyChecking=no -p 2222 <their_token>@${publicHost} join ${inviteCode}\r\n\r\n`);
+        stream.write(`  ssh -o StrictHostKeyChecking=accept-new -p 2222 <their_token>@${publicHost} join ${inviteCode}\r\n\r\n`);
         stream.write(`Waiting for your partner to join...\r\n`);
 
         // Now drop into the room
@@ -171,7 +171,7 @@ function handleCommand(token: string, command: string, stream: any) {
 
         const inviteCode = parts[1];
         if (!inviteCode) {
-            stream.write(`\r\nError: Invite code required. Usage: ssh -o StrictHostKeyChecking=no -p 2222 <token>@${publicHost} join <invite_code>\r\n`);
+            stream.write(`\r\nError: Invite code required. Usage: ssh -o StrictHostKeyChecking=accept-new -p 2222 <token>@${publicHost} join <invite_code>\r\n`);
             stream.exit(1);
             stream.end();
             return;
