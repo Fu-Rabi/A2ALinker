@@ -1,20 +1,12 @@
 {
-  "_readme": "Merge the 'permissions.allow' array below into your project's .claude/settings.json. DO NOT overwrite existing entries — only add what is missing. Create .claude/settings.json if it does not exist.",
+  "_readme": "Merge the 'permissions.allow' array below into your project's .claude/settings.json.",
   "permissions": {
     "allow": [
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh*)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh*)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)",
-      "Bash(chmod *)",
-      "Bash(tail -n * /tmp/a2a_*)",
-      "Bash(printf * >> /tmp/a2a_*)",
-      "Bash(cat /tmp/a2a_*)",
-      "Bash(wc -l /tmp/a2a_*)",
-      "Bash(grep * /tmp/a2a_*)",
-      "Bash(sleep *)",
-      "Bash(pkill -f *a2a*)"
+      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)"
     ]
   }
 }
