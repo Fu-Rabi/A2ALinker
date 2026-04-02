@@ -1,8 +1,8 @@
 # A2A Linker
 
-**A2A (Agent-to-Agent) Linker** is a central SSH broker designed to let autonomous AI agents collaborate natively across different machines using standard terminal streams (STDIN/STDOUT).
+**A2A (Agent-to-Agent) Linker** is a central relay broker that lets autonomous AI agents collaborate in real-time across different machines. Agents connect via HTTPS, exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the server routes messages between them without storing anything.
 
-It acts as a multiplexed switchboard for LLMs, allowing them to pair-program, debate, and share files across the internet without needing custom APIs, WebSockets, or complex SDK integrations. If an AI agent has access to a terminal, it can join an A2A Linker session.
+It acts as a multiplexed switchboard for LLMs, allowing them to pair-program, debate, and share files across the internet without needing custom APIs, WebSockets, or complex SDK integrations. If an AI agent can run `curl`, it can join an A2A Linker session.
 
 ---
 
@@ -11,7 +11,7 @@ As terminal-native AI agents become more powerful, they are often isolated to th
 
 **What it accomplishes:**
 * **Cross-Machine Pair-Programming:** Your local AI agent can connect to your friend's local AI agent to collaboratively debug a script.
-* **Zero-API Integration:** Because it uses standard SSH, no custom code is required to connect agents. It relies entirely on native bash commands.
+* **Zero-API Integration:** Because it uses standard HTTPS and `curl`, no custom code is required to connect agents. It relies entirely on native bash commands.
 * **Loop Prevention:** It introduces a customized `[OVER]/[STANDBY]` walkie-talkie protocol, preventing the infinite "polite loops" where AIs endlessly thank each other.
 
 ### Supported CLI Clients
@@ -19,13 +19,13 @@ A2A Linker is fully compatible with any major terminal-based AI assistant equipp
 - **Claude Code** (via Anthropic)
 - **Gemini CLI** (via Google)
 - **Codex / GitHub Copilot CLI**
-- Any custom agent framework that can run `child_process.spawn('ssh')`.
+- Any custom agent framework that can run `bash` scripts with `curl`.
 
 ---
 
 ### Using A2A Linker with Local LLMs
 
-A2A Linker works with local LLMs as long as the agent framework running them can execute shell commands. The only requirement is that the framework allows the SSH and bash commands to run **without pausing for human approval** on each step — otherwise the session will stall.
+A2A Linker works with local LLMs as long as the agent framework running them can execute shell commands. The only requirement is that the framework allows the bash and curl commands to run **without pausing for human approval** on each step — otherwise the session will stall.
 
 **For Claude Code, Gemini CLI, and Codex CLI** (even when pointed at a local model), this is already handled automatically by the skill's Step 0 setup. The `settings/` templates allowlist exactly the commands A2A needs.
 
@@ -56,7 +56,7 @@ For any framework not listed here, the general rule is: **find the setting that 
 
 **What the server never stores:** message content, IP addresses, agent identities, conversation history, or timestamps of individual messages.
 
-**Where messages actually go:** A message travels SSH → held in Node.js memory until the agent signals `[OVER]`or `[STANDBY]` (flushed immediately on signal, or after 500ms of silence as a fallback) → written directly to the partner's SSH channel → discarded. It never touches the database or any file on disk. You can verify this by reading `src/RoomManager.ts` - the relay function (`broadcastToRoom`) contains no database calls of any kind.
+**Where messages actually go:** A message arrives as an HTTP POST body → held in Node.js memory → written directly to the partner's in-memory queue or pending response object → discarded. It never touches the database or any file on disk. You can verify this by reading `src/http-server.ts` — the `/send` handler contains no database calls of any kind.
 
 **All session data is self-destructing:**
 - Every token, room, and invite is deleted when a session ends
@@ -83,9 +83,9 @@ For commercial licensing, please contact the author (**Fu-Rabi**).
 
 A2A Linker relies on four core pillars:
 
-1. **Identity via Tokens:** Users authenticate via standard SSH. If an agent connects as `new@host`, the server dynamically generates a secure `tok_xxxx` identity for them.
+1. **Identity via Tokens:** Agents register via a single HTTP POST with no credentials required. The server dynamically generates a secure `tok_xxxx` identity for them. Tokens are ephemeral — they exist only for the lifetime of a session.
 2. **Secure Rooms via Invites:** Agents do not pick a room name (which is vulnerable to guessing and prompt injection). The Host agent requests a room, and the server generates a one-time-use Invite Code. The second agent uses the invite to join.
-3. **Stream Multiplexing:** To prevent agents from typing over each other, the server buffers SSH chunks and only flushes a message to the room once an agent pauses typing for 0.5 seconds.
+3. **Atomic Message Delivery:** The HTTP skill transport uses POST request bodies — a message is only sent when the agent has finished composing it. The server forwards the complete, finalized message to the partner's queue immediately upon receipt. No buffering, no polling.
 4. **Protocols & Failsafes:** The server actively monitors the chat. If both AIs signal `[STANDBY]`, the server pauses the conversation so humans can inject new commands. If the server detects repetitive short patterns, it forcefully severs the connection to break the loop.
 
 ## How To Run The Server
@@ -98,13 +98,18 @@ A2A Linker relies on four core pillars:
    ```bash
    npm start
    ```
-   *The server runs on port `2222` by default. It will automatically generate an RSA host key and build the local SQLite database (`linker.db`) on first start.*
+   *The SSH broker runs on port `2222` by default. The HTTP API runs on port `443` by default (use `HTTP_PORT=3000` for local development). The server will automatically generate an RSA host key and build the local SQLite database (`linker.db`) on first start.*
+
+   Local development:
+   ```bash
+   HTTP_PORT=3000 npm start
+   ```
 
 ---
 
 ## How To Connect Agents (The Magic Way)
 
-The true power of this project is the **Agent Skill**. You don't have to manually type SSH commands — your AI does it for you.
+The true power of this project is the **Agent Skill**. You don't have to manually write HTTP commands — your AI does it for you.
 
 ### Skill Structure
 
@@ -114,10 +119,11 @@ The skill is fully self-contained under `.agents/skills/a2alinker/`:
 .agents/skills/a2alinker/
 ├── SKILL.md                        ← The runbook your AI reads
 ├── scripts/
-│   ├── a2a-host-connect.sh         ← HOST connection script
-│   ├── a2a-join-connect.sh         ← JOINER connection script
-│   ├── a2a-send.sh                 ← Send message + wait for delivery
-│   └── a2a-wait-message.sh         ← Event-driven message wait script
+│   ├── a2a-host-connect.sh         ← HOST: register + create room, print invite code
+│   ├── a2a-join-connect.sh         ← JOINER: register + join room via invite code
+│   ├── a2a-send.sh                 ← Send message + wait for DELIVERED confirmation
+│   ├── a2a-wait-message.sh         ← Long-poll the server until a message arrives
+│   └── check-remote.sh             ← Health check: verify server is reachable
 └── settings/
     ├── claude.json                 ← Permissions template for Claude Code
     ├── gemini.json                 ← Permissions template for Gemini CLI
@@ -126,14 +132,14 @@ The skill is fully self-contained under `.agents/skills/a2alinker/`:
 
 This layout means you can **drop the skill into any existing project** without touching your project's root config files — the agent reads its own settings template and merges only what is needed.
 
-### How the Agent Waits for Messages (Event-Driven)
+### How the Agent Waits for Messages (Event-Driven Long-Polling)
 
-Rather than having the AI repeatedly poll the log file (which wastes LLM tokens on every check), A2A Linker uses an **event-driven wait script**. After sending a message, the AI makes a single tool call to `a2a-wait-message.sh` which then:
+Rather than having the AI poll a log file (which wastes LLM tokens on every check), A2A Linker uses **event-driven long-polling**. After sending a message, the AI makes a single tool call to `a2a-wait-message.sh` which then:
 
-1. Records the current byte position in the log file
-2. Loops every 1 second **entirely in the shell** — the LLM is idle and consuming zero tokens
-3. Returns immediately the moment the partner's message (or any system event) appears as new bytes in the log
-4. If nothing arrives within 110 seconds, exits cleanly with the current log state before the tool call timeout is reached — the AI can then decide whether to keep waiting
+1. Makes a single HTTP GET request to `/wait` on the server
+2. The server holds the connection open **in memory** — the LLM is idle and consuming zero tokens
+3. The moment the partner calls `/send`, the server resolves the held `/wait` request **instantly** — no timers, no sleep loops, no file watching on either side
+4. If nothing arrives within 110 seconds, the server returns a `TIMEOUT:` response so the AI can decide whether to keep waiting
 
 This means a full conversation uses roughly **one tool call per message exchange** instead of 10+ polling calls. Token usage during the wait phase is zero.
 
@@ -154,23 +160,44 @@ This means a full conversation uses roughly **one tool call per message exchange
 4. **Join a Session (Person B):** Give the invite code to your friend. Your friend tells their AI:
    > *"Join the A2A session using invite_xyz789 and help them debug the python script."*
 
-The two AIs will autonomously connect via SSH and begin conversing using the `[OVER]` / `[STANDBY]` protocol to take turns — no further human input required.
+The two AIs will autonomously connect via HTTPS and begin conversing using the `[OVER]` / `[STANDBY]` protocol to take turns — no further human input required.
 
 ---
 
 ## How To Connect Manually (For Testing)
 
-If you want to join a room yourself as a human (or are building a non-autonomous script), you can run the raw SSH commands:
+If you want to test the HTTP API directly (or are building a non-autonomous script), you can use raw `curl` commands:
 
-1. **Register:** `ssh -o StrictHostKeyChecking=no -p 2222 new@localhost`
-2. **Host:** `ssh -o StrictHostKeyChecking=no -p 2222 tok_1234@localhost create`
-3. **Join:** `ssh -o StrictHostKeyChecking=no -p 2222 tok_9999@localhost join <invite_code>`
+```bash
+# Register
+TOKEN=$(curl -s -X POST https://broker.a2alinker.net/register | grep -o 'tok_[a-f0-9]*')
+
+# Create room (HOST)
+curl -s -X POST https://broker.a2alinker.net/create \
+  -H "Authorization: Bearer $TOKEN"
+
+# Join room (JOINER — replace invite_xxx with the actual code)
+curl -s -X POST https://broker.a2alinker.net/join/invite_xxx \
+  -H "Authorization: Bearer $TOKEN"
+
+# Send a message
+curl -s -X POST https://broker.a2alinker.net/send \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: text/plain" \
+  --data-raw "Hello [OVER]"
+
+# Wait for a message (blocks up to 110s)
+curl -s https://broker.a2alinker.net/wait \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The SSH broker on port `2222` remains available for direct terminal access and developer testing.
 
 ---
 
 ## The Agent Skill
 Included in this repository is the official `.agents/skills/a2alinker/` **Agent Skill**.
-Load the `SKILL.md` file into your AI's context architecture (or standard `.agents/skills/` folder) and your AI will autonomously know how to apply its own permissions, generate tokens, host rooms, and communicate using the `[OVER]` / `[STANDBY]` network protocol.
+Load the `SKILL.md` file into your AI's context architecture (or standard `.agents/skills/` folder) and your AI will autonomously know how to apply its own permissions, register tokens, host rooms, and communicate using the `[OVER]` / `[STANDBY]` network protocol.
 
 ---
 

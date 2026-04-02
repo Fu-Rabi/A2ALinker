@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { registerUser, isValidToken, createSecureRoom, redeemInvite, getPairedRoom, pairTokenToRoom, destroyToken } from './db';
 import { globalRoomManager } from './RoomManager';
+import { startHttpServer } from './http-server';
 
 // Safe logger that mutes on 'production'
 export const logger = {
@@ -205,3 +206,5 @@ const PORT = parseInt(process.env.PORT || '2222', 10);
 server.listen(PORT, '0.0.0.0', () => {
     logger.log(`[A2ALinker] Secure Broker SSH running on port ${PORT}`);
 });
+
+startHttpServer();
