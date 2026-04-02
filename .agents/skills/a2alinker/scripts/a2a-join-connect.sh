@@ -2,10 +2,9 @@
 # A2A Linker — JOINER connection script
 # Registers with the server and joins an existing room via invite code.
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh invite_XXXX
-set -e
 
-SERVER="204.168.213.203"
-PORT="2222"
+SERVER="broker.a2alinker.net"
+BASE_URL="https://$SERVER"
 INVITE="${1:-}"
 
 if [ -z "$INVITE" ]; then
@@ -14,45 +13,59 @@ if [ -z "$INVITE" ]; then
   exit 1
 fi
 
-# Kill any stale A2A joiner processes from previous sessions
-pkill -f "tail -f /tmp/a2a_join_in" 2>/dev/null || true
-pkill -f "ssh.*@.*join" 2>/dev/null || true
-sleep 1
+# Clean up stale session from previous run (best-effort, ignore failure)
+if [ -f /tmp/a2a_join_token ]; then
+  OLD_TOKEN=$(cat /tmp/a2a_join_token 2>/dev/null)
+  if [ -n "$OLD_TOKEN" ]; then
+    curl -s --max-time 5 -X POST "$BASE_URL/leave" \
+      -H "Authorization: Bearer $OLD_TOKEN" > /dev/null 2>&1 || true
+  fi
+  rm -f /tmp/a2a_join_token
+fi
 
-# Register — capture output, handle \r\n line endings
-REG_OUTPUT=$(ssh -o UserKnownHostsFile=.agents/skills/a2alinker/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=5 -p "$PORT" "new@$SERVER" 2>&1) || {
-  echo "ERROR: Cannot reach A2A Linker server at $SERVER:$PORT"
-  exit 1
-}
-TOKEN=$(echo "$REG_OUTPUT" | tr -d '\r' | grep -o 'tok_[a-f0-9]*' | head -1)
-if [ -z "$TOKEN" ]; then
-  echo "ERROR: Failed to parse registration token"
+# Register new token
+RESP=$(curl --max-time 10 -s -X POST "$BASE_URL/register")
+if [ $? -ne 0 ] || [ -z "$RESP" ]; then
+  echo "ERROR: Cannot reach A2A Linker server"
   exit 1
 fi
 
-# Join room in background (fully detached — required on macOS)
-rm -f /tmp/a2a_join_out.log /tmp/a2a_join_in /tmp/a2a_join_cursor
-touch /tmp/a2a_join_in
-python3 -c "
-import subprocess
-p = subprocess.Popen(
-    'tail -f /tmp/a2a_join_in | ssh -o UserKnownHostsFile=.agents/skills/a2alinker/known_hosts -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p $PORT $TOKEN@$SERVER join $INVITE',
-    shell=True,
-    stdout=open('/tmp/a2a_join_out.log', 'a'),
-    stderr=subprocess.STDOUT,
-    start_new_session=True
-)
-print('PID:', p.pid)
-"
+TOKEN=$(echo "$RESP" | grep -o 'tok_[a-f0-9]*')
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: Failed to parse token"
+  exit 1
+fi
 
-# Wait for connection (up to 20s)
-for i in $(seq 1 20); do
-  STATUS=$(grep -o '([0-9]/[0-9] connected)' /tmp/a2a_join_out.log 2>/dev/null | tail -1)
-  if [ -n "$STATUS" ]; then
-    echo "STATUS: $STATUS"
-    exit 0
+echo "$TOKEN" > /tmp/a2a_join_token
+
+# Join room
+RESP=$(curl --max-time 10 -s -X POST "$BASE_URL/join/$INVITE" \
+  -H "Authorization: Bearer $TOKEN")
+if [ $? -ne 0 ] || [ -z "$RESP" ]; then
+  echo "ERROR: Cannot reach A2A Linker server"
+  exit 1
+fi
+
+if echo "$RESP" | grep -q '"error"'; then
+  if echo "$RESP" | grep -q 'invalid or already used'; then
+    echo "ERROR: Invite code invalid or already used"
+  else
+    ERROR=$(echo "$RESP" | sed 's/.*"error":"\([^"]*\)".*/\1/')
+    echo "ERROR: $ERROR"
   fi
-  sleep 1
-done
-echo "ERROR: Timed out waiting for connection"
-exit 1
+  exit 1
+fi
+
+# Print rules text (decoded from JSON \n sequences)
+RULES=$(echo "$RESP" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
+if [ -n "$RULES" ]; then
+  echo "$RULES"
+fi
+
+# Print connection status
+STATUS=$(echo "$RESP" | grep -o '([0-9]/[0-9] connected)')
+if [ -n "$STATUS" ]; then
+  echo "STATUS: $STATUS"
+fi
+
+exit 0
