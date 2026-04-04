@@ -6,7 +6,8 @@
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh*)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)"
+      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-ping.sh*)"
     ]
   }
 }

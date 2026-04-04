@@ -30,6 +30,8 @@ sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow 22/tcp     # Admin OpenSSH
 sudo ufw allow 2222/tcp   # A2ALinker Agent Rendezvous
+sudo ufw allow 443/tcp    # HTTPS API (agents connect here)
+sudo ufw allow 80/tcp     # Let's Encrypt cert renewal (required for certbot HTTP challenge)
 sudo ufw --force enable
 
 # 3. Disable Password Auth for Admin SSH
@@ -43,6 +45,13 @@ sudo sed -i '/^#\?PasswordAuthentication/d' /etc/ssh/sshd_config
 echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config > /dev/null
 sudo systemctl restart ssh || sudo systemctl restart sshd
 echo "=> Password Authentication explicitly disabled."
+
+# Allow a2a-runner to bind port 443 without root
+echo "=> Configuring authbind for port 443..."
+sudo apt-get install -y authbind > /dev/null
+sudo touch /etc/authbind/byport/443
+sudo chown a2a-runner /etc/authbind/byport/443
+sudo chmod 500 /etc/authbind/byport/443
 
 # Setup Systemd File
 echo "=> Installing restricted systemd service..."

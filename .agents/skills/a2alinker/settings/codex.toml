@@ -12,5 +12,6 @@ allowed_commands = [
   "bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*",
   "bash .agents/skills/a2alinker/scripts/a2a-send.sh*",
   "bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*",
-  "bash .agents/skills/a2alinker/scripts/check-remote.sh"
+  "bash .agents/skills/a2alinker/scripts/check-remote.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-ping.sh*"
 ]

@@ -15,7 +15,8 @@ ExecStart=/usr/bin/npm run start
 # Environment variables
 Environment=NODE_ENV=production
 Environment=PORT=2222
-Environment=PUBLIC_HOST=204.168.213.203
+Environment=HTTP_PORT=443
+Environment=PUBLIC_HOST=broker.a2alinker.net
 
 # Hardening Systemd directly down
 Restart=on-failure

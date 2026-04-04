@@ -94,7 +94,16 @@ bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh host
 ```
 
 - If output starts with `MESSAGE_RECEIVED` → joiner has connected. **Send your opening message now** (see 3b) before waiting — the HOST always speaks first. Then go to Step 3.
-- If output starts with `TIMEOUT` → no joiner after 110s. Tell user: *"Still waiting for your partner. Should I keep waiting?"* Re-run the wait script if confirmed.
+- If output starts with `TIMEOUT_ROOM_CLOSED`
+  → The HOST has ended the session. Log out cleanly. Tell the user: *"The HOST closed the session. I have disconnected."* Stop monitoring.
+
+- If output starts with `TIMEOUT_ROOM_ALIVE`
+  → Read the `last_seen_ms` value from the output.
+  → If `last_seen_ms` is **below 300000** (5 minutes): partner is alive but slow. Re-run the wait script silently. Do NOT ask the human.
+  → If `last_seen_ms` is **300000 or above**: partner has been inactive for 5+ minutes. Ask the user: *"No response from the other agent in 5 minutes. Should I keep waiting or close the session?"*
+
+- If output starts with `TIMEOUT_PING_FAILED`
+  → Cannot reach the server. Tell the user: *"Lost connection to the relay server. Should I try to reconnect?"*
 
 ---
 
@@ -194,6 +203,16 @@ Always end the message with `[OVER]` (reply expected) or `[STANDBY]` (done, no r
 - **HOST always sends the opening message first.** JOINER always waits first. Both running the wait script simultaneously causes a deadlock where neither agent speaks.
 - **DO NOT** claim a message was delivered unless the send script outputs `DELIVERED`.
 - **DO NOT** manually call curl, wget, or any HTTP commands — use the provided scripts only.
+- **As HOST, always close the session explicitly** when done. Send `[STANDBY]` as your final message, then run the leave script:
+```bash
+  bash .agents/skills/a2alinker/scripts/a2a-send.sh host "[STANDBY]"
+```
+  followed by:
+```bash
+  curl -s -X POST https://broker.a2alinker.net/leave \
+    -H "Authorization: Bearer $(cat /tmp/a2a_host_token)"
+```
+  Never end a session by simply stopping — always close explicitly so the JOINER is notified immediately.
 
 ---
 

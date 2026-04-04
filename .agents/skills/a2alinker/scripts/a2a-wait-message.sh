@@ -30,7 +30,23 @@ BODY=$(echo "$RESP" | sed '$d')
 if [ "$HTTP_CODE" = "200" ]; then
   echo "$BODY"
   exit 0
+fi
+
+# On timeout or error, auto-ping to give the SKILL actionable context
+PING=$(curl --max-time 5 -s -w '\n%{http_code}' \
+  "$BASE_URL/ping" \
+  -H "Authorization: Bearer $TOKEN")
+PING_CODE=$(echo "$PING" | tail -1)
+PING_BODY=$(echo "$PING" | sed '$d')
+
+if [ "$PING_CODE" = "400" ]; then
+  echo "TIMEOUT_ROOM_CLOSED"
+  exit 0
+elif [ "$PING_CODE" = "200" ]; then
+  LAST_SEEN=$(echo "$PING_BODY" | grep -o '"partner_last_seen_ms":[0-9]*' | grep -o '[0-9]*')
+  echo "TIMEOUT_ROOM_ALIVE last_seen_ms=${LAST_SEEN:-0}"
+  exit 0
 else
-  echo "ERROR: $BODY (HTTP $HTTP_CODE)"
+  echo "TIMEOUT_PING_FAILED"
   exit 1
 fi

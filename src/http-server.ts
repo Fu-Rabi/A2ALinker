@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import https from 'https';
 import fs from 'fs';
 import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 import {
   registerUser,
   isValidToken,
@@ -39,6 +40,7 @@ interface HttpParticipant {
   token: string;
   name: string;                 // "Agent-xxxx" (token.substring(4, 8))
   roomName: string;
+  isHost: boolean;              // true = created the room, owns session lifecycle
   standby: boolean;
   recentShortMessageCount: number;
   lastSeen: number;             // Date.now() — updated on every /send or /wait call
@@ -97,12 +99,18 @@ function handleLeave(token: string): void {
   const partner = findPartner(p.roomName, token);
   participants.delete(token);
 
-  // Notify partner
+  // Notify partner with role-aware message
   if (partner) {
-    deliverToParticipant(
-      partner,
-      `MESSAGE_RECEIVED\n[SYSTEM]: '${p.name}' has left the room. Session ended.\n`,
-    );
+    const msg = p.isHost
+      ? `MESSAGE_RECEIVED\n[SYSTEM]: HOST has closed the session. You are disconnected.\n`
+      : `MESSAGE_RECEIVED\n[SYSTEM]: '${p.name}' has left the room. Session ended.\n`;
+    deliverToParticipant(partner, msg);
+
+    // HOST leaving forces JOINER out too — give them 2s to read the message
+    if (p.isHost) {
+      setTimeout(() => handleLeave(partner.token), 2_000);
+      return; // room destruction handled when JOINER is evicted
+    }
   }
 
   // Start reaper if room is now empty
@@ -127,13 +135,38 @@ function getToken(req: Request): string | null {
 const app = express();
 app.use(express.text({ limit: '1mb' }));
 
+// Rate limiters — keyed by IP
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many registrations from this IP. Try again later.' },
+});
+
+const createLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many rooms created from this IP. Try again later.' },
+});
+
+const joinLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many join attempts from this IP. Try again later.' },
+});
+
 // GET /health
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
 // POST /register
-app.post('/register', (_req, res) => {
+app.post('/register', registerLimiter, (_req, res) => {
   const token = 'tok_' + crypto.randomBytes(6).toString('hex');
   registerUser(token);
   log(`[A2ALinker:HTTP] Registered token ${token}`);
@@ -141,7 +174,7 @@ app.post('/register', (_req, res) => {
 });
 
 // POST /create
-app.post('/create', (req, res) => {
+app.post('/create', createLimiter, (req, res) => {
   const token = getToken(req);
   if (!token || !isValidToken(token)) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -164,6 +197,7 @@ app.post('/create', (req, res) => {
     token,
     name: `Agent-${token.substring(4, 8)}`,
     roomName: internalRoomName,
+    isHost: true,
     standby: false,
     recentShortMessageCount: 0,
     lastSeen: Date.now(),
@@ -176,7 +210,7 @@ app.post('/create', (req, res) => {
 });
 
 // POST /join/:inviteCode
-app.post('/join/:inviteCode', (req, res) => {
+app.post('/join/:inviteCode', joinLimiter, (req, res) => {
   const token = getToken(req);
   if (!token || !isValidToken(token)) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -205,6 +239,7 @@ app.post('/join/:inviteCode', (req, res) => {
     token,
     name: joinerName,
     roomName,
+    isHost: false,
     standby: false,
     recentShortMessageCount: 0,
     lastSeen: Date.now(),
@@ -363,10 +398,31 @@ app.post('/leave', (req, res) => {
   res.json({ ok: true });
 });
 
+// GET /ping
+app.get('/ping', (req, res) => {
+  const token = getToken(req);
+  if (!token || !isValidToken(token)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const participant = participants.get(token);
+  if (!participant) {
+    // Not in a room — session was closed
+    res.status(400).json({ error: 'Not in a room' });
+    return;
+  }
+  const partner = findPartner(participant.roomName, token);
+  res.json({
+    room_alive: true,
+    partner_connected: !!partner,
+    partner_last_seen_ms: partner ? Date.now() - partner.lastSeen : null,
+  });
+});
+
 export function startHttpServer(): void {
   const HTTP_PORT = parseInt(process.env.HTTP_PORT || '443', 10);
   try {
-    const key  = fs.readFileSync('/etc/letsencrypt/live/broker.a2alinker.net/privkey.pem');
+    const key = fs.readFileSync('/etc/letsencrypt/live/broker.a2alinker.net/privkey.pem');
     const cert = fs.readFileSync('/etc/letsencrypt/live/broker.a2alinker.net/fullchain.pem');
     https.createServer({ key, cert }, app).listen(HTTP_PORT, () => {
       log(`[A2ALinker] HTTPS API running on port ${HTTP_PORT}`);
