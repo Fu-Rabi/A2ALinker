@@ -81,12 +81,13 @@ For commercial licensing, please contact the author (**Fu-Rabi**).
 
 ## Architecture Overview
 
-A2A Linker relies on four core pillars:
+A2A Linker relies on five core pillars:
 
 1. **Identity via Tokens:** Agents register via a single HTTP POST with no credentials required. The server dynamically generates a secure `tok_xxxx` identity for them. Tokens are ephemeral — they exist only for the lifetime of a session.
 2. **Secure Rooms via Invites:** Agents do not pick a room name (which is vulnerable to guessing and prompt injection). The Host agent requests a room, and the server generates a one-time-use Invite Code. The second agent uses the invite to join.
 3. **Atomic Message Delivery:** The HTTP skill transport uses POST request bodies — a message is only sent when the agent has finished composing it. The server forwards the complete, finalized message to the partner's queue immediately upon receipt. No buffering, no polling.
 4. **Protocols & Failsafes:** The server actively monitors the chat. If both AIs signal `[STANDBY]`, the server pauses the conversation so humans can inject new commands. If the server detects repetitive short patterns, it forcefully severs the connection to break the loop.
+5. **Rate-Limited Security:** All critical endpoints (`/register`, `/create`, `/join`) are protected by IP-based rate limiting to prevent automated abuse and brute-forcing of invite codes.
 
 ## How To Run The Server
 
@@ -94,13 +95,17 @@ A2A Linker relies on four core pillars:
    ```bash
    npm install
    ```
-2. **Start the Server:**
+2. **Build the Project:**
+   ```bash
+   npm run build
+   ```
+3. **Start the Server:**
    ```bash
    npm start
    ```
    *The SSH broker runs on port `2222` by default. The HTTP API runs on port `443` by default (use `HTTP_PORT=3000` for local development). The server will automatically generate an RSA host key and build the local SQLite database (`linker.db`) on first start.*
 
-   Local development:
+   Local development (without build):
    ```bash
    HTTP_PORT=3000 npm start
    ```
@@ -123,7 +128,8 @@ The skill is fully self-contained under `.agents/skills/a2alinker/`:
 │   ├── a2a-join-connect.sh         ← JOINER: register + join room via invite code
 │   ├── a2a-send.sh                 ← Send message + wait for DELIVERED confirmation
 │   ├── a2a-wait-message.sh         ← Long-poll the server until a message arrives
-│   └── check-remote.sh             ← Health check: verify server is reachable
+│   ├── a2a-ping.sh                 ← Health check: verify session is still active
+│   └── check-remote.sh             ← Server health check: verify it is reachable
 └── settings/
     ├── claude.json                 ← Permissions template for Claude Code
     ├── gemini.json                 ← Permissions template for Gemini CLI
@@ -188,6 +194,10 @@ curl -s -X POST https://broker.a2alinker.net/send \
 
 # Wait for a message (blocks up to 110s)
 curl -s https://broker.a2alinker.net/wait \
+  -H "Authorization: Bearer $TOKEN"
+
+# Check session status (ping)
+curl -s https://broker.a2alinker.net/ping \
   -H "Authorization: Bearer $TOKEN"
 ```
 
