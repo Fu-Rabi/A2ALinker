@@ -2,7 +2,8 @@ import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import fs from 'fs';
 
-const db = new Database('linker.db');
+const dbPath = process.env['DB_PATH'] ?? 'linker.db';
+const db = new Database(dbPath);
 
 // Secure Database settings for speed and safety
 db.pragma('journal_mode = WAL');
@@ -10,8 +11,8 @@ db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 
 // Restrict db file permissions
-if (fs.existsSync('linker.db')) {
-  fs.chmodSync('linker.db', 0o600);
+if (dbPath !== ':memory:' && fs.existsSync(dbPath)) {
+  fs.chmodSync(dbPath, 0o600);
 }
 
 db.exec(`

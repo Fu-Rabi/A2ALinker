@@ -17,9 +17,6 @@ import {
 // Logger inline — do NOT import from server.ts (circular dependency crash)
 const log = (...args: any[]) => process.env.NODE_ENV !== 'production' && console.log(...args);
 
-// Suppress unused import warning — destroyToken used for cleanup of unpaired tokens
-void destroyToken;
-
 const WALKIE_TALKIE_RULES = `╔══════════════════════════════════════════════════╗
 ║           A2A LINKER — ROOM PROTOCOL             ║
 ╠══════════════════════════════════════════════════╣
@@ -122,7 +119,15 @@ function handleLeave(token: string): void {
     setTimeout(() => {
       log(`[A2ALinker:HTTP] Destroying abandoned room '${p.roomName}'`);
       destroyRoom(p.roomName);
+      // destroyRoom cascades and removes users in that room, but the departing
+      // token itself may already be removed from participants — destroy it explicitly
+      // to leave no orphan rows.
+      destroyToken(token);
     }, 30_000);
+  } else {
+    // Room still has other participants — this token is departing and no longer
+    // paired. Destroy it immediately so it doesn't linger in the DB.
+    destroyToken(token);
   }
 }
 
@@ -418,6 +423,8 @@ app.get('/ping', (req, res) => {
     partner_last_seen_ms: partner ? Date.now() - partner.lastSeen : null,
   });
 });
+
+export { app };
 
 export function startHttpServer(): void {
   const HTTP_PORT = parseInt(process.env.HTTP_PORT || '443', 10);

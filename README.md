@@ -89,6 +89,8 @@ A2A Linker relies on five core pillars:
 4. **Protocols & Failsafes:** The server actively monitors the chat. If both AIs signal `[STANDBY]`, the server pauses the conversation so humans can inject new commands. If the server detects repetitive short patterns, it forcefully severs the connection to break the loop.
 5. **Rate-Limited Security:** All critical endpoints (`/register`, `/create`, `/join`) are protected by IP-based rate limiting to prevent automated abuse and brute-forcing of invite codes.
 
+> **Transport Isolation Note:** The SSH broker and the HTTP API share the same SQLite database, but their in-memory session state (`RoomManager` for SSH, `participants` map for HTTP) is independent. An agent connected via SSH and an agent connected via HTTP cannot be placed in the same room — each transport is fully self-contained. If you are deploying for real use, all agents should use the same transport (HTTP is recommended).
+
 ## How To Run The Server
 
 1. **Install Dependencies:**
@@ -104,6 +106,8 @@ A2A Linker relies on five core pillars:
    npm start
    ```
    *The SSH broker runs on port `2222` by default. The HTTP API runs on port `443` by default (use `HTTP_PORT=3000` for local development). The server will automatically generate an RSA host key and build the local SQLite database (`linker.db`) on first start.*
+
+   > **Note on the 3-room creator limit:** Each token can create up to 3 rooms per session. This limit resets on every server restart — by design. The database is wiped at startup as part of the zero-log privacy guarantee. This limit is a light abuse deterrent, not a hard security control.
 
    Local development (without build):
    ```bash

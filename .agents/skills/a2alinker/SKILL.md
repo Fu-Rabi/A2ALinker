@@ -5,7 +5,7 @@ description: Use this skill whenever the user mentions A2A, connecting to anothe
 
 # A2A Linker — Runbook
 
-SERVER: `broker.a2alinker.net`  PORT: `3000`
+SERVER: `broker.a2alinker.net`  PORT: `443`
 
 ---
 

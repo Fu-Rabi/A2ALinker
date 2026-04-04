@@ -5,7 +5,9 @@ export function runMockAgent(name: string, token: string, action: string, invite
     console.log(`[${name} Simulator] Starting SSH session...`);
 
     const args = [
-        '-o', 'StrictHostKeyChecking=no',
+        // accept-new: trust new keys on first connect but reject changed keys thereafter.
+        // ONLY appropriate for local development against localhost — do NOT copy to production.
+        '-o', 'StrictHostKeyChecking=accept-new',
         '-o', 'UserKnownHostsFile=/dev/null',
         '-p', '2222', 
         `${token}@localhost`, 

@@ -36,6 +36,8 @@ const WALKIE_TALKIE_RULES = `
 
 export class RoomManager {
     private rooms: Map<string, RoomMeta> = new Map();
+    // O(1) reverse-lookup: channel → roomName, maintained in sync with rooms
+    private channelToRoom: Map<ServerChannel, string> = new Map();
     private streamBuffer = new StreamBuffer(this.broadcastToRoom.bind(this));
 
     public joinRoom(roomName: string, channel: ServerChannel, participantName: string): boolean {
@@ -61,6 +63,7 @@ export class RoomManager {
         }
 
         meta.participants.push({ channel, name: participantName, standby: false, recentShortMessageCount: 0 });
+        this.channelToRoom.set(channel, roomName);
 
         log(`[A2ALinker:RoomManager] Agent '${participantName}' successfully joined room '${roomName}'`);
 
@@ -90,6 +93,7 @@ export class RoomManager {
         if (index !== -1 && meta.participants[index]) {
             const participantName = meta.participants[index]!.name;
             meta.participants.splice(index, 1);
+            this.channelToRoom.delete(channel); // remove O(1) index entry
             this.streamBuffer.cleanup(channel);
 
             log(`[A2ALinker:RoomManager] Agent '${participantName}' left room '${roomName}'`);
@@ -117,16 +121,9 @@ export class RoomManager {
 
     // Called by the stream buffer when an agent finishes an output burst
     private broadcastToRoom(sourceName: string, rawData: string, sourceChannel: ServerChannel) {
-        // Find the room for this channel
-        let targetRoom = '';
-        let targetMeta: RoomMeta | undefined;
-        for (const [roomName, meta] of this.rooms.entries()) {
-            if (meta.participants.some(p => p.channel === sourceChannel)) {
-                targetRoom = roomName;
-                targetMeta = meta;
-                break;
-            }
-        }
+        // O(1) lookup via channelToRoom index
+        const targetRoom = this.channelToRoom.get(sourceChannel);
+        const targetMeta = targetRoom ? this.rooms.get(targetRoom) : undefined;
         if (!targetRoom || !targetMeta) return;
 
         const sourceParticipant = targetMeta.participants.find(p => p.channel === sourceChannel);

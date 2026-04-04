@@ -1,5 +1,20 @@
 import { ServerChannel } from 'ssh2';
 
+/**
+ * StreamBuffer — SSH transport only.
+ *
+ * SSH streams raw keystroke data: each word or character arrives as a tiny
+ * Buffer chunk. StreamBuffer accumulates these chunks and only flushes once
+ * the agent appears to have finished speaking (either an [OVER]/[STANDBY]
+ * signal is detected, the buffer hits the 128KB cap, or 500ms of silence).
+ *
+ * The HTTP transport does NOT use StreamBuffer. An HTTP /send call delivers
+ * a complete, pre-composed message body in a single atomic POST — there is
+ * no partial-data problem to buffer against. The two transports therefore
+ * have intentionally divergent timing semantics:
+ *   • SSH:  debounced, up to 500ms latency before relay
+ *   • HTTP: instant relay upon POST receipt
+ */
 export class StreamBuffer {
     private buffers: Map<ServerChannel, Buffer> = new Map();
     private debounceTimers: Map<ServerChannel, NodeJS.Timeout> = new Map();
