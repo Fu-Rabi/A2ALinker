@@ -45,6 +45,11 @@ interface HttpParticipant {
   } | null;
 }
 
+function detachTimer(timer: NodeJS.Timeout): NodeJS.Timeout {
+  timer.unref();
+  return timer;
+}
+
 // Global map: token → HttpParticipant
 const participants = new Map<string, HttpParticipant>();
 
@@ -115,7 +120,7 @@ function handleLeave(token: string, forcedByHost: boolean = false): void {
 
     // HOST leaving forces JOINER out too — give them 2s to read the message
     if (p.isHost) {
-      setTimeout(() => handleLeave(partner.token, true), 2_000);
+      detachTimer(setTimeout(() => handleLeave(partner.token, true), 2_000));
       return; // room destruction handled when JOINER is evicted
     }
   }
@@ -126,14 +131,14 @@ function handleLeave(token: string, forcedByHost: boolean = false): void {
   );
   if (!roomHasParticipants) {
     logger.info(`[A2ALinker:HTTP] Room '${p.roomName}' is empty. Starting 30s destruction timer.`);
-    setTimeout(() => {
+    detachTimer(setTimeout(() => {
       logger.info(`[A2ALinker:HTTP] Destroying abandoned room '${p.roomName}'`);
       destroyRoom(p.roomName);
       // destroyRoom cascades and removes users in that room, but the departing
       // token itself may already be removed from participants — destroy it explicitly
       // to leave no orphan rows.
       destroyToken(token);
-    }, 30_000);
+    }, 30_000));
   } else {
     // Room still has other participants — this token is departing and no longer
     // paired. Destroy it immediately so it doesn't linger in the DB.
