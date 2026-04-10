@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Security & Keys
+host.key
+.env
+
+# Local Database
+linker.db
+linker.db-shm
+linker.db-wal
+
+# Build output
+dist/
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+!jest.config.js
+!.agents/skills/a2alinker/runtime/
+!.agents/skills/a2alinker/runtime/*.js
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local CLI settings (machine-specific)
+.claude/settings.json
+.claude/settings.local.json
+.codex/config.toml
+.gemini/settings.json
+
+# Runtime artifacts
+.a2a_setup_done
+server_verify.pid
