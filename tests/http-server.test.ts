@@ -384,4 +384,47 @@ describe('HTTP wait/send behavior', () => {
             });
         }
     });
+
+    it('resolves a second joiner wait promptly after the host closes the session', async () => {
+        const server = app.listen();
+        const client = request(server);
+
+        try {
+            const { hostToken, joinToken } = await createStandardSessionWith(client);
+
+            const firstWaitPromise = client
+                .get('/wait')
+                .set('Authorization', `Bearer ${joinToken}`);
+
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            const leaveRes = await client
+                .post('/leave')
+                .set('Authorization', `Bearer ${hostToken}`);
+
+            expect(leaveRes.status).toBe(200);
+
+            const firstWaitRes = await firstWaitPromise;
+            expect(firstWaitRes.status).toBe(200);
+            expect(firstWaitRes.text).toContain('HOST has closed the session');
+
+            const secondWaitPromise = client
+                .get('/wait')
+                .set('Authorization', `Bearer ${joinToken}`);
+
+            const secondWaitRes = await Promise.race([
+                secondWaitPromise,
+                new Promise<never>((_, reject) => {
+                    setTimeout(() => reject(new Error('Timed out waiting for forced joiner disconnect')), 3500);
+                }),
+            ]);
+
+            expect(secondWaitRes.status).toBe(200);
+            expect(secondWaitRes.text).toContain('HOST has closed the session');
+        } finally {
+            await new Promise<void>((resolve, reject) => {
+                server.close((error) => error ? reject(error) : resolve());
+            });
+        }
+    }, 7000);
 });

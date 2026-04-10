@@ -80,15 +80,28 @@ function deliverToParticipant(p: HttpParticipant, text: string): void {
   }
 }
 
-function handleLeave(token: string): void {
+function resolveParticipantWait(p: HttpParticipant, text: string): void {
+  if (!p.pendingWait) {
+    return;
+  }
+  const { res, timer } = p.pendingWait;
+  clearTimeout(timer);
+  p.pendingWait = null;
+  res.send(text);
+}
+
+function buildSelfLeaveMessage(p: HttpParticipant, forcedByHost: boolean): string {
+  if (forcedByHost && !p.isHost) {
+    return 'MESSAGE_RECEIVED\n[SYSTEM]: HOST has closed the session. You are disconnected.\n';
+  }
+  return 'MESSAGE_RECEIVED\n[SYSTEM]: Session ended. You are disconnected.\n';
+}
+
+function handleLeave(token: string, forcedByHost: boolean = false): void {
   const p = participants.get(token);
   if (!p) return;
 
-  // Cancel any pending wait
-  if (p.pendingWait) {
-    clearTimeout(p.pendingWait.timer);
-    p.pendingWait = null;
-  }
+  resolveParticipantWait(p, buildSelfLeaveMessage(p, forcedByHost));
 
   const partner = findPartner(p.roomName, token);
   participants.delete(token);
@@ -102,7 +115,7 @@ function handleLeave(token: string): void {
 
     // HOST leaving forces JOINER out too — give them 2s to read the message
     if (p.isHost) {
-      setTimeout(() => handleLeave(partner.token), 2_000);
+      setTimeout(() => handleLeave(partner.token, true), 2_000);
       return; // room destruction handled when JOINER is evicted
     }
   }

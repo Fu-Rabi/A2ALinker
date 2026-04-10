@@ -3,8 +3,9 @@
 # Optionally sends a message first, then blocks until a real message arrives.
 # Handles [SYSTEM] join notifications and sub-5-min timeouts internally.
 # Retries up to 3× on TIMEOUT_PING_FAILED (transient connectivity) before surfacing.
-# Only surfaces: real MESSAGE_RECEIVED, 5+ min TIMEOUT_ROOM_ALIVE,
-#                TIMEOUT_ROOM_CLOSED, or TIMEOUT_PING_FAILED (after retries).
+# Only surfaces: real MESSAGE_RECEIVED, non-join [SYSTEM] control events,
+#                5+ min TIMEOUT_ROOM_ALIVE, TIMEOUT_ROOM_CLOSED,
+#                or TIMEOUT_PING_FAILED (after retries).
 #
 # Usage (wait only):   bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join]
 # Usage (send + wait): bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] "message [OVER]"
@@ -36,9 +37,15 @@ while true; do
   RESULT=$(bash "$SCRIPT_DIR/a2a-wait-message.sh" "$ROLE")
 
   if echo "$RESULT" | grep -q '^MESSAGE_RECEIVED'; then
-    if echo "$RESULT" | grep -q '\[SYSTEM\]'; then
+    if echo "$RESULT" | grep -q '\[SYSTEM'; then
+      LOWER_RESULT=$(printf '%s' "$RESULT" | tr '[:upper:]' '[:lower:]')
+      if echo "$LOWER_RESULT" | grep -q 'has joined\|session is live'; then
+        PING_FAIL_COUNT=0
+        continue  # Connection notification — loop silently
+      fi
       PING_FAIL_COUNT=0
-      continue  # Connection notification — loop silently
+      echo "$RESULT"  # Pause/close/alert notifications are terminal to the caller
+      exit 0
     fi
     echo "$RESULT"
     exit 0

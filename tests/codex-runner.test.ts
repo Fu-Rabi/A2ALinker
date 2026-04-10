@@ -67,6 +67,9 @@ printf '%s\\n' "$PROMPT" >> "$OUTPUT_FILE"
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-wrapper-'));
         const binDir = path.join(root, 'bin');
         const argsLog = path.join(root, 'node-args.log');
+        const expectedSupervisor = fs.existsSync(path.join(process.cwd(), 'dist', 'a2a-supervisor.js'))
+            ? path.join(process.cwd(), 'dist', 'a2a-supervisor.js')
+            : path.join(process.cwd(), '.agents/skills/a2alinker/runtime/a2a-supervisor.js');
         fs.mkdirSync(binDir, { recursive: true });
 
         writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
@@ -89,7 +92,8 @@ printf '%s\n' "$@" > "${argsLog}"
 
         expect(result.status).toBe(0);
         const logged = fs.readFileSync(argsLog, 'utf8');
-        expect(logged).toContain(path.join(process.cwd(), 'dist', 'a2a-supervisor.js'));
+        const [supervisorPath] = logged.trim().split('\n');
+        expect(path.resolve(supervisorPath ?? '')).toBe(path.resolve(expectedSupervisor));
         expect(logged).toContain('--runner-command');
         expect(logged).toContain('a2a-codex-runner.sh');
     });
