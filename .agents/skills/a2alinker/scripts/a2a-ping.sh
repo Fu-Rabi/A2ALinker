@@ -4,8 +4,9 @@
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-ping.sh [host|join]
 # Output: ROOM_ALIVE last_seen_ms=NNN | ROOM_CLOSED | PING_ERROR
 
-SERVER="${A2A_SERVER:-broker.a2alinker.net}"
-BASE_URL="https://$SERVER"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/a2a-common.sh"
+BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 

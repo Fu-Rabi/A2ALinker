@@ -3,8 +3,9 @@
 # Registers with the server and joins an existing room via invite code.
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh invite_XXXX
 
-SERVER="${A2A_SERVER:-broker.a2alinker.net}"
-BASE_URL="https://$SERVER"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/a2a-common.sh"
+BASE_URL="$(a2a_resolve_base_url)"
 INVITE="${A2A_INVITE:-${1:-}}"
 
 if [ -z "$INVITE" ]; then
@@ -13,6 +14,15 @@ if [ -z "$INVITE" ]; then
   echo "       Or (legacy): bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh invite_XXXX"
   exit 1
 fi
+
+case "$INVITE" in
+  listen_*)
+    echo "ERROR: Listener codes must be redeemed by HOST, not JOIN."
+    echo "Use: bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh $INVITE"
+    echo "Or:  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code $INVITE --agent-label codex --goal \"<task>\""
+    exit 1
+    ;;
+esac
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
 if [ -f /tmp/a2a_join_token ]; then
@@ -58,10 +68,14 @@ if [ -n "$STATUS" ]; then
   echo "STATUS: $STATUS"
 fi
 
+echo "ROLE: join"
+
 # Print headless room rule (set by HOST — if true, agent runs without asking user)
 HEADLESS=$(echo "$RESP" | sed -En 's/.*"headless": *(true|false).*/\1/p')
 if [ -n "$HEADLESS" ]; then
   echo "HEADLESS: $HEADLESS"
 fi
+
+echo "NEXT_STEP: Wait for the host to send the first message, or run the supervisor in join mode."
 
 exit 0

@@ -45,6 +45,16 @@ interface HttpParticipant {
   } | null;
 }
 
+function redactSecret(secret: string): string {
+  if (!secret) {
+    return '[redacted]';
+  }
+  if (secret.length <= 8) {
+    return '[redacted]';
+  }
+  return `${secret.slice(0, 4)}…${secret.slice(-4)}`;
+}
+
 function detachTimer(timer: NodeJS.Timeout): NodeJS.Timeout {
   timer.unref();
   return timer;
@@ -191,7 +201,7 @@ app.get('/health', (_req, res) => {
 app.post('/register', registerLimiter, (_req, res) => {
   const token = 'tok_' + crypto.randomBytes(6).toString('hex');
   registerUser(token);
-  logger.info(`[A2ALinker:HTTP] Registered token ${token}`);
+  logger.info(`[A2ALinker:HTTP] Registered token ${redactSecret(token)}`);
   res.json({ token });
 });
 
@@ -214,7 +224,7 @@ app.post('/setup', createLimiter, express.json({ limit: '1mb' }), (req, res) => 
   // Create HttpParticipant for the creator
   participants.set(token, createHttpParticipant(token, roomName, body.type === 'standard'));
 
-  logger.info(`[A2ALinker:HTTP] One-shot setup: token '${token}' created ${body.type} room '${roomName}' with code '${code}'`);
+  logger.info(`[A2ALinker:HTTP] One-shot setup: token '${redactSecret(token)}' created ${body.type} room '${roomName}' with code '${redactSecret(code)}'`);
   res.json({ token, code, roomName, role: body.type === 'standard' ? 'host' : 'joiner' });
 });
 
@@ -240,7 +250,7 @@ app.post('/create', createLimiter, (req, res) => {
   // Create HttpParticipant for HOST
   participants.set(token, createHttpParticipant(token, internalRoomName, true));
 
-  logger.info(`[A2ALinker:HTTP] Token '${token}' created room '${internalRoomName}' with invite '${inviteCode}'`);
+  logger.info(`[A2ALinker:HTTP] Token '${redactSecret(token)}' created room '${internalRoomName}' with invite '${redactSecret(inviteCode)}'`);
   res.json({ inviteCode, roomName: internalRoomName });
 });
 
@@ -266,7 +276,7 @@ app.post('/listen', createLimiter, (req, res) => {
   // Creator waits as JOINER — redeemer of the listen_ code becomes HOST
   participants.set(token, createHttpParticipant(token, internalRoomName, false));
 
-  logger.info(`[A2ALinker:HTTP] Token '${token}' created listener room '${internalRoomName}' with code '${listenerCode}'`);
+  logger.info(`[A2ALinker:HTTP] Token '${redactSecret(token)}' created listener room '${internalRoomName}' with code '${redactSecret(listenerCode)}'`);
   res.json({ listenerCode, roomName: internalRoomName });
 });
 
@@ -329,7 +339,7 @@ app.post('/join/:inviteCode', joinLimiter, (req, res) => {
   // Create HttpParticipant — role determined by code type
   participants.set(token, createHttpParticipant(token, roomName, redeemerIsHost));
 
-  logger.info(`[A2ALinker:HTTP] Token '${token}' joined room '${roomName}' as ${redeemerIsHost ? 'HOST' : 'JOINER'}`);
+  logger.info(`[A2ALinker:HTTP] Token '${redactSecret(token)}' joined room '${roomName}' as ${redeemerIsHost ? 'HOST' : 'JOINER'}`);
 
   // Notify the waiting participant that their partner has connected
   const partner = findPartner(roomName, token);
@@ -378,7 +388,7 @@ app.post('/register-and-join/:inviteCode', joinLimiter, (req, res) => {
     deliverToParticipant(partner, msg);
   }
 
-  logger.info(`[A2ALinker:HTTP] One-shot register-and-join: token '${token}' joined room '${roomName}'`);
+  logger.info(`[A2ALinker:HTTP] One-shot register-and-join: token '${redactSecret(token)}' joined room '${roomName}'`);
   res.json({
     token,
     roomName,
@@ -538,6 +548,7 @@ app.get('/ping', (req, res) => {
 });
 
 export { app };
+export { redactSecret };
 
 export function startHttpServer(): void {
   const HTTP_PORT = parseInt(process.env.HTTP_PORT || '443', 10);
@@ -550,13 +561,15 @@ export function startHttpServer(): void {
       logger.info(`[A2ALinker] HTTPS API running on port ${HTTP_PORT}`);
     });
   } catch (error) {
-    logger.warn(
-      `[A2ALinker] HTTPS certs unavailable at '${keyPath}' and '${certPath}'. Falling back to HTTP.`,
-    );
+    const allowInsecureLocalDev = process.env['ALLOW_INSECURE_HTTP_LOCAL_DEV'] === 'true';
+    logger.warn(`[A2ALinker] HTTPS certs unavailable at '${keyPath}' and '${certPath}'.`);
     if (error instanceof Error) {
       logger.warn(`[A2ALinker] HTTPS startup detail: ${error.message}`);
     }
-    // cert not present — local dev, use plain HTTP
+    if (!allowInsecureLocalDev) {
+      logger.error('[A2ALinker] Refusing to start without TLS. Set ALLOW_INSECURE_HTTP_LOCAL_DEV=true for explicit local development.');
+      return;
+    }
     app.listen(HTTP_PORT, () => {
       logger.info(`[A2ALinker] HTTP API running on port ${HTTP_PORT} (local dev — no cert, using plain HTTP)`);
     });

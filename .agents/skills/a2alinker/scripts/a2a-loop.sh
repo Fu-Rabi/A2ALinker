@@ -9,6 +9,7 @@
 #
 # Usage (wait only):   bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join]
 # Usage (send + wait): bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] "message [OVER]"
+# Usage (stdin):       bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] --stdin < message.txt
 
 ROLE="${1:-join}"
 MESSAGE="${2:-}"
@@ -16,6 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 MAX_PING_FAILS=3
 PING_FAIL_COUNT=0
+READ_STDIN=false
+
+if [ "$MESSAGE" = "--stdin" ]; then
+  READ_STDIN=true
+  MESSAGE=""
+fi
 
 # Pre-flight: verify token exists and is non-empty
 if [ ! -f "$TOKEN_FILE" ] || [ -z "$(cat "$TOKEN_FILE")" ]; then
@@ -24,7 +31,13 @@ if [ ! -f "$TOKEN_FILE" ] || [ -z "$(cat "$TOKEN_FILE")" ]; then
 fi
 
 # If a message was provided, send it first
-if [ -n "$MESSAGE" ]; then
+if [ "$READ_STDIN" = true ]; then
+  SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" --stdin)
+  echo "$SEND_RESULT"
+  if [ "$SEND_RESULT" != "DELIVERED" ]; then
+    exit 1
+  fi
+elif [ -n "$MESSAGE" ]; then
   SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" "$MESSAGE")
   echo "$SEND_RESULT"
   if [ "$SEND_RESULT" != "DELIVERED" ]; then

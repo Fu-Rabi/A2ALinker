@@ -1,6 +1,21 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const supervisor_1 = require("./supervisor");
+function renderUsage() {
+    return [
+        'Usage:',
+        '  --mode host|join|listen is required.',
+        '  --agent-label <label> is required unless using --status or --help.',
+        '  --runner-command <command> is required unless using --status or --help.',
+        '  --runner-kind gemini|claude|codex|custom is optional metadata for status/policy persistence.',
+        '',
+        'Common examples:',
+        '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label codex',
+        '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status',
+        '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --status',
+        '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code listen_xxx --agent-label codex',
+    ].join('\n');
+}
 function parseArgs(argv) {
     const args = new Map();
     for (let index = 0; index < argv.length; index += 1) {
@@ -19,20 +34,30 @@ function parseArgs(argv) {
     const mode = args.get('--mode');
     const agentLabel = args.get('--agent-label');
     const runnerCommand = args.get('--runner-command');
+    const runnerKind = args.get('--runner-kind');
+    const status = args.has('--status');
+    const help = args.has('--help');
+    if (help) {
+        return {
+            mode: 'listen',
+            help: true,
+        };
+    }
     if (mode !== 'host' && mode !== 'join' && mode !== 'listen') {
         throw new Error('Usage: --mode host|join|listen is required.');
     }
-    if (!agentLabel) {
+    if (!status && !agentLabel) {
         throw new Error('Usage: --agent-label <label> is required.');
     }
-    if (!runnerCommand) {
+    if (!status && !runnerCommand) {
         throw new Error('Usage: --runner-command <command> is required.');
     }
     const headlessValue = args.get('--headless');
     const parsed = {
         mode,
-        agentLabel,
-        runnerCommand,
+        ...(agentLabel !== undefined ? { agentLabel } : {}),
+        ...(runnerCommand !== undefined ? { runnerCommand } : {}),
+        ...(runnerKind !== undefined ? { runnerKind: runnerKind } : {}),
     };
     const goal = args.get('--goal');
     const inviteCode = args.get('--invite-code');
@@ -57,6 +82,12 @@ function parseArgs(argv) {
     if (args.has('--no-timestamps')) {
         parsed.timestampEnabled = false;
     }
+    if (status) {
+        parsed.status = true;
+    }
+    if (help) {
+        parsed.help = true;
+    }
     if (scriptDir !== undefined) {
         parsed.scriptDir = scriptDir;
     }
@@ -67,6 +98,29 @@ function parseArgs(argv) {
 }
 async function main() {
     const parsed = parseArgs(process.argv.slice(2));
+    if (parsed.help) {
+        console.log(renderUsage());
+        return;
+    }
+    if (parsed.status) {
+        if (parsed.mode === 'listen') {
+            const artifact = (0, supervisor_1.readListenerSessionArtifact)(process.cwd());
+            console.log(JSON.stringify({
+                ...artifact,
+                artifactPath: (0, supervisor_1.getListenerSessionArtifactPath)(process.cwd()),
+            }, null, 2));
+            return;
+        }
+        if (parsed.mode === 'host') {
+            const artifact = (0, supervisor_1.readHostSessionArtifact)(process.cwd());
+            console.log(JSON.stringify({
+                ...artifact,
+                artifactPath: (0, supervisor_1.getHostSessionArtifactPath)(process.cwd()),
+            }, null, 2));
+            return;
+        }
+        throw new Error('Usage: --status is only supported with --mode listen or --mode host.');
+    }
     const session = await (0, supervisor_1.runSupervisor)(parsed);
     console.log(`SESSION_DIR: ${session.sessionDir}`);
 }
@@ -75,3 +129,4 @@ main().catch((error) => {
     console.error(message);
     process.exit(1);
 });
+//# sourceMappingURL=a2a-supervisor.js.map

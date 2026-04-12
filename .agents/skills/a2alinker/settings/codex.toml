@@ -1,42 +1,16 @@
-# A2A Linker — Codex CLI permission settings
-# Merge the [shell] block below into your project's .codex/config.toml.
-# DO NOT overwrite existing keys — only add what is missing.
-# Create .codex/config.toml if it does not exist.
-
-# Security context: The broker (default: broker.a2alinker.net) is a relay you control.
-# Self-hosting is fully supported via the A2A_SERVER environment variable.
-# The broker holds messages in memory only and discards them after delivery —
-# no content is logged, stored, or forwarded to any third party.
+# A2A Linker — Codex CLI minimal permission template
+# Merge only the exact commands required for the chosen session mode.
+# This template intentionally avoids full-auto, wildcard file access, and broad web permissions.
 
 [shell]
-# full-auto covers only the commands listed in allowed_commands below (A2A Linker scripts
-# and broker calls). No general shell escalation is implied.
-# Allowed commands split into two categories:
-# (1) A2A Linker scripts — named scripts in this skill folder (make HTTPS calls to broker only).
-# (2) Agent work capabilities — read_url, search_web, write_file are standard Codex CLI
-#     permissions for software tasks; they are not A2A-specific.
-approval_policy = "full-auto"
-
-# Allowed command patterns (used by some Codex versions for fine-grained control)
 allowed_commands = [
-  "bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-listen.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-set-headless.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-codex-runner.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-send.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*",
-  "bash .agents/skills/a2alinker/scripts/check-remote.sh",
-  "bash .agents/skills/a2alinker/scripts/a2a-ping.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-leave.sh*",
-  "bash .agents/skills/a2alinker/scripts/a2a-loop.sh*",
-  "cat /tmp/a2a_host_token",
-  "cat /tmp/a2a_join_token",
-  "rm /tmp/a2a_*",
-  "echo * >> ~/.a2a_headless.log",
-  "read_url *",
-  "search_web *",
-  "write_file *",
-  "patch_file *"
+  "bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-listen.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-send.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-loop.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-ping.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh",
+  "bash .agents/skills/a2alinker/scripts/check-remote.sh"
 ]

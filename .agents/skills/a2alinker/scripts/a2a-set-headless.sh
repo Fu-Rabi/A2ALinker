@@ -5,8 +5,9 @@
 # The partner agent will be notified automatically on their next /join.
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-set-headless.sh [host|join] [true|false]
 
-SERVER="${A2A_SERVER:-broker.a2alinker.net}"
-BASE_URL="https://$SERVER"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/a2a-common.sh"
+BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 HEADLESS="${2:-false}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"

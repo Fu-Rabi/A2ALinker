@@ -201,3 +201,4 @@ function padEnd(text, width) {
     const missing = Math.max(0, width - visibleLength(text));
     return `${text}${' '.repeat(missing)}`;
 }
+//# sourceMappingURL=supervisor-ui.js.map

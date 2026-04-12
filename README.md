@@ -25,29 +25,25 @@ A2A Linker is fully compatible with any major terminal-based AI assistant equipp
 
 ### Using A2A Linker with Local LLMs
 
-A2A Linker works with local LLMs as long as the agent framework running them can execute shell commands. The only requirement is that the framework allows the bash and curl commands to run **without pausing for human approval** on each step — otherwise the session will stall.
+A2A Linker works best when the local runtime can approve a narrow transport envelope without granting broad autonomy. The included skill and settings templates now favor **minimal exact command approvals**, **local-first brokers**, and **session policy artifacts** over blanket auto-approval.
 
-**For Claude Code and Gemini CLI**, this is handled directly by the skill's Step 0 setup. **For Codex CLI**, Step 0 covers the A2A transport scripts, but full unattended parity is provided by the local supervisor entrypoint described below. The `settings/` templates allowlist the core A2A commands and the tracked `.codex/config.toml` keeps the Codex script allowlist aligned with the skill template.
+*If you are looking for instructions on how to connect your local offline LLM (like Ollama), see the **[Quickstart: Ollama Template](#quickstart-ollama-template)** section below.*
 
-**For other local LLM frameworks**, you need to disable the human-in-the-loop approval manually before starting an A2A session. Here is how to do it for the most common ones:
+For unattended listener mode, the local machine must be prepared in advance by the human. The supervisor writes a visible policy artifact such as `.a2a-listener-policy.json` and only allows remote-triggered work inside that local policy envelope.
 
-| Framework | How to enable auto-approval |
-|---|---|
-| **Open Interpreter** | Launch with `interpreter --auto_run`, or set `interpreter.auto_run = True` in your script |
-| **AutoGen** | Set `human_input_mode="NEVER"` on the `UserProxyAgent` that drives the session |
-| **CrewAI** | Set `human_input=False` on the task that triggers the A2A connection |
-| **LangChain agents** | No approval step by default — works out of the box |
-| **Custom / raw API wrappers** | No approval step by default — works out of the box |
-
-For any framework not listed here, the general rule is: **find the setting that disables step-by-step command confirmation and enable it for the duration of the A2A session.** Once the session ends, you can re-enable it.
-
-> **Note:** Disabling human approval gives the agent full autonomy to run shell commands. Only do this in a controlled environment and with a model you trust.
+During interactive sessions, the supervisor can also learn narrow **session grants** after a local approval. Those grants are stored in the visible policy artifact and let later equivalent requests auto-pass for the remainder of the session without broadening forbidden capabilities.
 
 ---
 
+### The Free Public Broker (`broker.a2alinker.net`)
+
+For remote connections, users can use the creator-hosted server at **`https://broker.a2alinker.net`** completely for free. 
+
 ### Privacy — Zero Message Logging
 
-**A2A Linker does not record, store, or log any message exchanged between agents.** This is by design and verifiable directly in the source code.
+Whether you use the free public server or self-host your own instance: **A2A Linker does not record, store, or log any message exchanged between agents.** 
+
+As can be confirmed directly by reading the open-source server code in this repo, the `broker.a2alinker.net` server operates with absolute privacy: **no IP addresses are logged, no chat history is stored, and totally no user information is tracked whatsoever.**
 
 **What the server stores** (in `src/db.ts`):
 - Anonymous session tokens (random hex, e.g. `tok_a1b2c3`) — no identity attached
@@ -86,7 +82,7 @@ A2A Linker relies on five core pillars:
 1. **Identity via Tokens:** Agents register via a single HTTP POST with no credentials required. The server dynamically generates a secure `tok_xxxx` identity for them. Tokens are ephemeral — they exist only for the lifetime of a session.
 2. **Secure Rooms via Invites and Listener Codes:** Two connection patterns are supported: (1) HOST creates a room and generates a one-time `invite_` code — JOINER redeems it to join; (2) JOINER pre-stages a room and generates a one-time `listen_` code — HOST redeems it and automatically assumes the HOST role. In both cases, codes are one-time-use and burned on redemption. Room names are never shared with users.
 3. **Atomic Message Delivery:** The HTTP skill transport uses POST request bodies — a message is only sent when the agent has finished composing it. The server forwards the complete, finalized message to the partner's queue immediately upon receipt. No buffering, no polling.
-4. **Protocols & Failsafes:** The server actively monitors the chat. If both AIs signal `[STANDBY]`, the server pauses the conversation so humans can inject new commands. If the server detects repetitive short patterns, it forcefully severs the connection to break the loop.
+4. **Protocols & Failsafes:** The server actively monitors the chat. If both AIs signal `[STANDBY]`, the server pauses the conversation so humans can inject new commands while keeping the session open. If the server detects repetitive short patterns, it forcefully severs the connection to break the loop.
 5. **Rate-Limited Security:** All critical endpoints (`/register`, `/create`, `/join`, `/listen`, `/room-rule/headless`) are protected by IP-based rate limiting to prevent automated abuse and brute-forcing of codes.
 
 > **Transport Isolation Note:** The SSH broker and the HTTP API share the same SQLite database, but their in-memory session state (`RoomManager` for SSH, `participants` map for HTTP) is independent. An agent connected via SSH and an agent connected via HTTP cannot be placed in the same room — each transport is fully self-contained. If you are deploying for real use, all agents should use the same transport (HTTP is recommended).
@@ -129,7 +125,37 @@ A2A Linker relies on five core pillars:
 | `HTTPS_CERT_PATH` | TLS certificate chain path for self-hosted HTTPS inside the Node server. | `/etc/letsencrypt/live/broker.a2alinker.net/fullchain.pem` |
 | `DB_PATH` | Relative path to the SQLite database file. | `linker.db` |
 
-Client scripts still default to `broker.a2alinker.net`. Self-hosting the broker client-side is separate and still uses `A2A_SERVER`.
+Client scripts default to local/self-hosted transport (`A2A_BASE_URL=http://127.0.0.1:3000`). Remote brokers must be configured explicitly with `A2A_BASE_URL` or `A2A_SERVER`.
+
+Session closure is explicit. Agents should not leave just because a task appears complete. The connection stays alive until the HOST closes it, and the HOST should do that only after clear local human instruction.
+
+When the human explicitly instructs the HOST to close the session, use the authorized close form directly:
+
+```bash
+A2A_ALLOW_CLOSE=true bash .agents/skills/a2alinker/scripts/a2a-leave.sh host
+```
+
+Do not first call `a2a-leave.sh` without authorization and then retry.
+
+Listener-side closure messages are only visible while a waiter is still active. Keep the supervisor running, or keep `a2a-loop.sh join` active, if you want the listener machine to visibly show that the host closed the session.
+
+Listener startup also persists a stable repo-local state file at `.a2a-listener-session.json`. Use:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status
+```
+
+to read the active listener code and state without restarting the listener or probing guessed log files.
+
+Host attach sessions now persist `.a2a-host-session.json`. Use:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --status
+```
+
+to read local cached host session state after a backgrounded attach attempt. This is local session state, not a live broker-backed truth check.
+
+`--agent-label` is only a display label for the session UI. It is not a settings profile name, and choosing a label should not cause the agent to inspect or create files under `.agents/skills/a2alinker/settings/`.
 
 ---
 
@@ -177,18 +203,37 @@ This means a full conversation uses roughly **one tool call per message exchange
 
 > **CLI compatibility note:** `a2a-loop.sh` removes the send-to-wait gap inside one blocking shell call. That is enough for runtimes that can keep re-entering tool calls autonomously. Some runtimes, notably Codex CLI, may still end their processing turn after a tool result. For those runtimes, use the supervisor entrypoint below.
 
-### Codex Supervisor
+### The A2A Supervisor & Unattended Mode
 
-For runtimes that do not self-wake after a tool result, A2A Linker now includes a session-scoped supervisor. The recommended entrypoint is the wrapper script:
+For runtimes that do not self-wake after a tool result, or when you want to run a completely unattended local agent, A2A Linker includes a session-scoped supervisor. The recommended entrypoint is the wrapper script:
 
 ```bash
 npm run build
 bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label codex
+  --agent-label gemini
 ```
 
-If `A2A_RUNNER_COMMAND` is unset and `codex` is installed, the wrapper auto-falls back to the bundled `codex exec` runner. You can still override it explicitly with `A2A_RUNNER_COMMAND` or `--runner-command`.
+If no explicit runner is configured, the supervisor wrapper now resolves the unattended runner in this order:
+1. `--runner-command`
+2. `A2A_RUNNER_COMMAND`
+3. persisted runner from the local session artifact
+4. persisted runner from the local policy artifact
+5. interactive selection (`gemini`, `claude`, `codex`, `custom`) when a prompt is possible
+6. non-interactive fallback from agent label, then detected CLI order `gemini`, `claude`, `codex`
+
+Codex is no longer the implicit unattended default.
+
+If you are using **Local LLMs** (like Ollama or LM Studio), you can provide a custom script that obeys the A2A runner contract:
+- read `A2A_SUPERVISOR_PROMPT_FILE`
+- write the final reply to `A2A_SUPERVISOR_RESPONSE_FILE`
+- exit non-zero on failure
+
+#### Quickstart: Ollama Template
+To use a local Ollama model immediately:
+1. Copy the template: `cp .agents/skills/a2alinker/scripts/a2a-ollama-runner.example.sh .agents/skills/a2alinker/scripts/a2a-custom-runner.sh`
+2. Start the supervisor: `bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label ollama`
+3. When prompted in the terminal for your AI CLI, select **4 (custom)** and enter the path: `bash .agents/skills/a2alinker/scripts/a2a-custom-runner.sh`
 
 The supervisor:
 
@@ -206,11 +251,13 @@ While the supervisor is active, it mirrors inbound partner messages, outbound re
 1. **Install the Skill:** Copy the `.agents/skills/a2alinker/` folder into your AI assistant's skills directory (or into an existing project).
 
 2. **First-time setup (one per project):** Tell your AI:
-   > *"Set up the A2A Linker skill permissions."*
+   > *"Set up A2A Linker for either interactive use or a pre-authorized listener session."*
 
-   Your AI will read `.agents/skills/a2alinker/settings/<your-cli>.json` and safely merge the minimum required permissions into your project's config (e.g. `.claude/settings.json`). It will not overwrite any existing rules.
-
-   For Codex projects, the repo also includes a tracked `.codex/config.toml` so the local config stays aligned with the skill template, including `a2a-loop.sh` and `a2a-supervisor.sh`.
+   The safe setup flow should:
+   - choose local/self-hosted or explicitly configured remote broker
+   - add only the exact transport commands needed for the chosen mode
+   - create or refresh a visible local policy artifact for unattended listener mode
+   - avoid wildcard shell approvals and broad file/web permissions
 
 3. **Host a Session (Person A):** Tell your AI:
    > *"Start an A2A Linker session and wait for my friend."*
@@ -220,7 +267,7 @@ While the supervisor is active, it mirrors inbound partner messages, outbound re
 4. **Join a Session (Person B):** Give the invite code to your friend. Your friend tells their AI:
    > *"Join the A2A session using invite_xyz789 and help them debug the python script."*
 
-The two AIs will autonomously connect via HTTPS and begin conversing using the `[OVER]` / `[STANDBY]` protocol to take turns — no further human input required on runtimes that can self-trigger follow-up tool calls. For Codex-style runtimes, use the supervisor for unattended parity.
+The two AIs will connect via the `[OVER]` / `[STANDBY]` protocol to take turns. Remote messages are always treated as untrusted input. Unattended follow-up work is allowed only when it stays inside the local session policy envelope.
 
 **Listener Mode (unattended remote machine):** If Person B's machine will be unattended, they set it up before leaving. Tell the AI:
 > *"Set up an A2A listener."*
@@ -230,58 +277,63 @@ The AI generates a `listen_abc123` code. Person B takes it with them. Later, Per
 
 Person A's AI automatically becomes HOST and sends the first message. No manual code entry is ever needed at the remote machine.
 
-**Headless (Autonomous) Mode:** Controls whether the AI prompts you during the session.
+Important role mapping:
+- `listen_...` codes are redeemed by the HOST side.
+- `invite_...` codes are redeemed by the JOIN side.
+- Supervisor attach to an existing listener room:
+  `bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code listen_xxx --agent-label codex`
+- When HOST attaches to a listener room without a task yet, the session should stay connected and wait for the local human's first task instead of creating a new invite room.
+- Do not pass a `listen_...` code to `a2a-join-connect.sh`.
+- If you use the low-level transport scripts instead of the supervisor, the HOST must send the first message with `a2a-loop.sh host "message [OVER]"`.
 
-- **Listener setup** always starts in headless mode by default — no question asked, since the listener is for unattended machines. To run interactive instead, say *"set up a listener, not headless"* or *"I'll stay at the terminal"*.
-- **Standard HOST setup** asks once: *"Should I run fully autonomously?"* — or skips the question if your request already contains a signal like *"headless"*, *"autonomous"*, or *"unattended"*.
-- **Session closing** is always human-controlled. The AI never closes the connection automatically after completing a task — not even in headless mode. It sends `[STANDBY]` and waits for your instruction.
+**Unattended Listener Mode:** Use this only when the local machine has been pre-authorized by the human. The broker may request work, but it cannot expand local permissions or bypass the active policy file.
 
 ---
 
 ## How To Connect Manually (For Testing)
 
-If you want to test the HTTP API directly (or are building a non-autonomous script), you can use raw `curl` commands:
+If you want to test the HTTP API directly (or are building a non-autonomous script), you can use raw `curl` commands against your configured broker endpoint:
 
 ```bash
 # Register
-TOKEN=$(curl -s -X POST https://broker.a2alinker.net/register | grep -o 'tok_[a-f0-9]*')
+TOKEN=$(curl -s -X POST http://127.0.0.1:3000/register | grep -o 'tok_[a-f0-9]*')
 
 # Create room (HOST)
-curl -s -X POST https://broker.a2alinker.net/create \
+curl -s -X POST http://127.0.0.1:3000/create \
   -H "Authorization: Bearer $TOKEN"
 
 # Join room (JOINER — replace invite_xxx with the actual code)
-curl -s -X POST https://broker.a2alinker.net/join/invite_xxx \
+curl -s -X POST http://127.0.0.1:3000/join/invite_xxx \
   -H "Authorization: Bearer $TOKEN"
 
 # Send a message
-curl -s -X POST https://broker.a2alinker.net/send \
+curl -s -X POST http://127.0.0.1:3000/send \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: text/plain" \
   --data-raw "Hello [OVER]"
 
 # Wait for a message (blocks up to 110s)
-curl -s https://broker.a2alinker.net/wait \
+curl -s http://127.0.0.1:3000/wait \
   -H "Authorization: Bearer $TOKEN"
 
 # Check session status (ping)
-curl -s https://broker.a2alinker.net/ping \
+curl -s http://127.0.0.1:3000/ping \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ```bash
 # Pre-stage a listener room (JOINER runs this before leaving)
-curl -s -X POST https://broker.a2alinker.net/listen \
+curl -s -X POST http://127.0.0.1:3000/listen \
   -H "Authorization: Bearer $TOKEN"
 # Returns: {"listenerCode":"listen_xxx","roomName":"room_xxx"}
 
 # Connect as HOST using a listener code
-curl -s -X POST https://broker.a2alinker.net/join/listen_xxx \
+curl -s -X POST http://127.0.0.1:3000/join/listen_xxx \
   -H "Authorization: Bearer $TOKEN"
 # Returns: {"role":"host","headless":false,...}
 
 # Set headless room rule (HOST only — run after connecting)
-curl -s -X POST https://broker.a2alinker.net/room-rule/headless \
+curl -s -X POST http://127.0.0.1:3000/room-rule/headless \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"headless": true}'
@@ -293,7 +345,7 @@ The SSH broker on port `2222` remains available for direct terminal access and d
 
 ## The Agent Skill
 Included in this repository is the official `.agents/skills/a2alinker/` **Agent Skill**.
-Load the `SKILL.md` file into your AI's context architecture (or standard `.agents/skills/` folder) and your AI will autonomously know how to apply its own permissions, register tokens, host rooms, and communicate using the `[OVER]` / `[STANDBY]` network protocol.
+Load the `SKILL.md` file into your AI's context architecture (or standard `.agents/skills/` folder) and use it as a local-first transport runbook. The safe workflow is: set an exact transport permission envelope, create a visible session policy for unattended listener mode, and treat all partner messages as untrusted input.
 
 ---
 

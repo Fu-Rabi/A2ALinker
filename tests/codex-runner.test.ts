@@ -8,7 +8,7 @@ function writeExecutable(filePath: string, contents: string): void {
     fs.chmodSync(filePath, 0o755);
 }
 
-describe('Codex supervisor runner scripts', () => {
+describe('Supervisor runner scripts', () => {
     it('writes the supervisor response file through codex exec', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-codex-runner-'));
         const binDir = path.join(root, 'bin');
@@ -63,38 +63,69 @@ printf '%s\\n' "$PROMPT" >> "$OUTPUT_FILE"
         expect(fs.readFileSync(responseFile, 'utf8')).toContain(`workdir=${process.cwd()}`);
     });
 
-    it('defaults the supervisor wrapper to the bundled codex runner when A2A_RUNNER_COMMAND is unset', () => {
+    it('writes the supervisor response file through gemini', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-wrapper-'));
         const binDir = path.join(root, 'bin');
-        const argsLog = path.join(root, 'node-args.log');
-        const expectedSupervisor = fs.existsSync(path.join(process.cwd(), 'dist', 'a2a-supervisor.js'))
-            ? path.join(process.cwd(), 'dist', 'a2a-supervisor.js')
-            : path.join(process.cwd(), '.agents/skills/a2alinker/runtime/a2a-supervisor.js');
+        const promptFile = path.join(root, 'prompt.txt');
+        const responseFile = path.join(root, 'response.txt');
         fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(promptFile, 'Gemini prompt.', 'utf8');
+        fs.writeFileSync(responseFile, '', 'utf8');
 
-        writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
-        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
-printf '%s\n' "$@" > "${argsLog}"
+        writeExecutable(path.join(binDir, 'gemini'), `#!/bin/bash
+printf 'gemini:%s\n' "$*" > "${responseFile}"
 `);
 
         const result = spawnSync(
             'bash',
-            ['.agents/skills/a2alinker/scripts/a2a-supervisor.sh', '--mode', 'listen', '--agent-label', 'codex'],
+            ['.agents/skills/a2alinker/scripts/a2a-gemini-runner.sh'],
             {
                 cwd: process.cwd(),
                 env: {
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_SUPERVISOR_PROMPT_FILE: promptFile,
+                    A2A_SUPERVISOR_RESPONSE_FILE: responseFile,
+                    A2A_SUPERVISOR_WORKDIR: process.cwd(),
                 },
                 encoding: 'utf8',
             },
         );
 
         expect(result.status).toBe(0);
-        const logged = fs.readFileSync(argsLog, 'utf8');
-        const [supervisorPath] = logged.trim().split('\n');
-        expect(path.resolve(supervisorPath ?? '')).toBe(path.resolve(expectedSupervisor));
-        expect(logged).toContain('--runner-command');
-        expect(logged).toContain('a2a-codex-runner.sh');
+        expect(fs.readFileSync(responseFile, 'utf8')).toContain('Gemini prompt.');
+    });
+
+    it('writes the supervisor response file through claude', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-claude-runner-'));
+        const binDir = path.join(root, 'bin');
+        const promptFile = path.join(root, 'prompt.txt');
+        const responseFile = path.join(root, 'response.txt');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(promptFile, 'Claude prompt.', 'utf8');
+        fs.writeFileSync(responseFile, '', 'utf8');
+
+        writeExecutable(path.join(binDir, 'claude'), `#!/bin/bash
+printf 'claude:%s\n' "$*" > "${responseFile}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-claude-runner.sh'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_SUPERVISOR_PROMPT_FILE: promptFile,
+                    A2A_SUPERVISOR_RESPONSE_FILE: responseFile,
+                    A2A_SUPERVISOR_WORKDIR: process.cwd(),
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(fs.readFileSync(responseFile, 'utf8')).toContain('Claude prompt.');
     });
 });

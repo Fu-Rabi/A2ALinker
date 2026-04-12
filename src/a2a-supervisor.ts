@@ -1,9 +1,17 @@
-import { runSupervisor, SupervisorMode } from './supervisor';
+import {
+  getHostSessionArtifactPath,
+  getListenerSessionArtifactPath,
+  readHostSessionArtifact,
+  readListenerSessionArtifact,
+  runSupervisor,
+  SupervisorMode,
+} from './supervisor';
 
 interface CliArgs {
   mode: SupervisorMode;
-  agentLabel: string;
-  runnerCommand: string;
+  agentLabel?: string;
+  runnerCommand?: string;
+  runnerKind?: 'gemini' | 'claude' | 'codex' | 'custom';
   goal?: string;
   inviteCode?: string;
   listenerCode?: string;
@@ -12,6 +20,24 @@ interface CliArgs {
   sessionRoot?: string;
   plainMode?: boolean;
   timestampEnabled?: boolean;
+  status?: boolean;
+  help?: boolean;
+}
+
+function renderUsage(): string {
+  return [
+    'Usage:',
+    '  --mode host|join|listen is required.',
+    '  --agent-label <label> is required unless using --status or --help.',
+    '  --runner-command <command> is required unless using --status or --help.',
+    '  --runner-kind gemini|claude|codex|custom is optional metadata for status/policy persistence.',
+    '',
+    'Common examples:',
+    '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label codex',
+    '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status',
+    '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --status',
+    '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code listen_xxx --agent-label codex',
+  ].join('\n');
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -34,14 +60,24 @@ function parseArgs(argv: string[]): CliArgs {
   const mode = args.get('--mode');
   const agentLabel = args.get('--agent-label');
   const runnerCommand = args.get('--runner-command');
+  const runnerKind = args.get('--runner-kind');
+  const status = args.has('--status');
+  const help = args.has('--help');
+
+  if (help) {
+    return {
+      mode: 'listen',
+      help: true,
+    };
+  }
 
   if (mode !== 'host' && mode !== 'join' && mode !== 'listen') {
     throw new Error('Usage: --mode host|join|listen is required.');
   }
-  if (!agentLabel) {
+  if (!status && !agentLabel) {
     throw new Error('Usage: --agent-label <label> is required.');
   }
-  if (!runnerCommand) {
+  if (!status && !runnerCommand) {
     throw new Error('Usage: --runner-command <command> is required.');
   }
 
@@ -49,8 +85,9 @@ function parseArgs(argv: string[]): CliArgs {
 
   const parsed: CliArgs = {
     mode,
-    agentLabel,
-    runnerCommand,
+    ...(agentLabel !== undefined ? { agentLabel } : {}),
+    ...(runnerCommand !== undefined ? { runnerCommand } : {}),
+    ...(runnerKind !== undefined ? { runnerKind: runnerKind as NonNullable<CliArgs['runnerKind']> } : {}),
   };
 
   const goal = args.get('--goal');
@@ -77,6 +114,12 @@ function parseArgs(argv: string[]): CliArgs {
   if (args.has('--no-timestamps')) {
     parsed.timestampEnabled = false;
   }
+  if (status) {
+    parsed.status = true;
+  }
+  if (help) {
+    parsed.help = true;
+  }
   if (scriptDir !== undefined) {
     parsed.scriptDir = scriptDir;
   }
@@ -89,7 +132,30 @@ function parseArgs(argv: string[]): CliArgs {
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
-  const session = await runSupervisor(parsed);
+  if (parsed.help) {
+    console.log(renderUsage());
+    return;
+  }
+  if (parsed.status) {
+    if (parsed.mode === 'listen') {
+      const artifact = readListenerSessionArtifact(process.cwd());
+      console.log(JSON.stringify({
+        ...artifact,
+        artifactPath: getListenerSessionArtifactPath(process.cwd()),
+      }, null, 2));
+      return;
+    }
+    if (parsed.mode === 'host') {
+      const artifact = readHostSessionArtifact(process.cwd());
+      console.log(JSON.stringify({
+        ...artifact,
+        artifactPath: getHostSessionArtifactPath(process.cwd()),
+      }, null, 2));
+      return;
+    }
+    throw new Error('Usage: --status is only supported with --mode listen or --mode host.');
+  }
+  const session = await runSupervisor(parsed as Parameters<typeof runSupervisor>[0]);
   console.log(`SESSION_DIR: ${session.sessionDir}`);
 }
 

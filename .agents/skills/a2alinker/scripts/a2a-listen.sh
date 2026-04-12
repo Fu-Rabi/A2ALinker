@@ -5,8 +5,9 @@
 # The redeemer of this code automatically becomes HOST.
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-listen.sh
 
-SERVER="${A2A_SERVER:-broker.a2alinker.net}"
-BASE_URL="https://$SERVER"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/a2a-common.sh"
+BASE_URL="$(a2a_resolve_base_url)"
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
 if [ -f /tmp/a2a_join_token ]; then
@@ -41,6 +42,8 @@ fi
 echo "$TOKEN" > /tmp/a2a_join_token
 chmod 600 /tmp/a2a_join_token
 
+echo "ROLE: join"
 echo "LISTENER_CODE: $LISTEN_CODE"
 echo "HEADLESS_SET: $HEADLESS"
+echo 'NEXT_STEP: Keep the supervisor running, or run bash .agents/skills/a2alinker/scripts/a2a-loop.sh join to stay attached and receive close notifications.'
 exit 0

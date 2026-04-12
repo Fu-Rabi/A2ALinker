@@ -1,28 +1,17 @@
 {
-  "_readme": "Merge the 'permissions.allow' array below into your project's .claude/settings.json.",
-  "_permissions_note": "Permissions below fall into two categories: (1) A2A Linker scripts — the Bash() entries allowlist specific scripts in this skill folder; each script makes HTTPS calls only to the configured broker. (2) Agent work capabilities — FileSystemRead/Write/Edit and WebFetch are standard permissions the agent needs to read/write project code during the session; they are not A2A-specific.",
-  "_security_context": "The broker (default: broker.a2alinker.net) is a relay you control. Self-hosting is fully supported: set the A2A_SERVER environment variable before running scripts to point at your own instance. The broker holds messages in memory only and discards them after delivery — no content is logged, stored, or forwarded to any third party.",
+  "_readme": "Optional minimal permissions for a pre-authorized A2A listener session. Merge only the exact entries you need into .claude/settings.json after explicit user approval.",
+  "_security_context": "Default to local/self-hosted brokers. Remote brokers must be configured explicitly via A2A_BASE_URL or A2A_SERVER for the session.",
   "permissions": {
     "allow": [
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh*)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-listen.sh)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-set-headless.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-ping.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-leave.sh*)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-loop.sh*)",
-      "Bash(cat /tmp/a2a_host_token)",
-      "Bash(cat /tmp/a2a_join_token)",
-      "Bash(rm /tmp/a2a_*)",
-      "Bash(echo * >> ~/.a2a_headless.log)",
-      "WebFetch(domain:*)",
-      "FileSystemRead(path:*)",
-      "FileSystemWrite(path:*)",
-      "FileSystemEdit(path:*)"
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-loop.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-ping.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)"
     ]
   }
 }

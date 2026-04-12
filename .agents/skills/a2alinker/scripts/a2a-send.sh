@@ -2,17 +2,41 @@
 # A2A Linker — Send Message Script
 # Sends a message to the session via HTTP POST and waits for DELIVERED confirmation.
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-send.sh [host|join] "message [OVER|STANDBY]"
+# Usage: bash .agents/skills/a2alinker/scripts/a2a-send.sh "message [OVER|STANDBY]"   # defaults to host
+# Usage: bash .agents/skills/a2alinker/scripts/a2a-send.sh [host|join] --stdin < message.txt
 # Exit 0 = DELIVERED, Exit 1 = NOT_DELIVERED
 
-SERVER="${A2A_SERVER:-broker.a2alinker.net}"
-BASE_URL="https://$SERVER"
-ROLE="${1:-host}"
-MESSAGE="${2:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/a2a-common.sh"
+BASE_URL="$(a2a_resolve_base_url)"
+ROLE="host"
+MESSAGE=""
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+READ_STDIN=false
+
+if [ "${1:-}" = "host" ] || [ "${1:-}" = "join" ]; then
+  ROLE="$1"
+  MESSAGE="${2:-}"
+else
+  MESSAGE="${1:-}"
+fi
+
+TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+
+if [ "$MESSAGE" = "--stdin" ]; then
+  READ_STDIN=true
+  MESSAGE=""
+fi
+
+if [ "$READ_STDIN" = true ]; then
+  MESSAGE="$(cat)"
+fi
 
 if [ -z "$MESSAGE" ]; then
   echo "ERROR: No message provided."
   echo "Usage: bash .agents/skills/a2alinker/scripts/a2a-send.sh [host|join] \"message [OVER]\""
+  echo "   or: bash .agents/skills/a2alinker/scripts/a2a-send.sh \"message [OVER]\""
+  echo "   or: bash .agents/skills/a2alinker/scripts/a2a-send.sh [host|join] --stdin < message.txt"
   exit 1
 fi
 
