@@ -171,21 +171,26 @@ The skill is fully self-contained under `.agents/skills/a2alinker/`:
 .agents/skills/a2alinker/
 ├── SKILL.md                        ← The runbook your AI reads
 ├── scripts/
+│   ├── a2a-claude-runner.sh        ← CLI runner for Claude Code
+│   ├── a2a-codex-runner.sh         ← CLI runner for Codex
+│   ├── a2a-common.sh               ← Shared environment variables and utility functions
+│   ├── a2a-gemini-runner.sh        ← CLI runner for Gemini CLI
 │   ├── a2a-host-connect.sh         ← HOST: register + create room OR connect via listener code
 │   ├── a2a-join-connect.sh         ← JOINER: register + join room via invite code
+│   ├── a2a-leave.sh                ← Cleanup: leave room and delete token
 │   ├── a2a-listen.sh               ← JOINER: pre-stage a room and generate a listen_ code
+│   ├── a2a-loop.sh                 ← Smart wait loop: send + wait in one call, filters noise internally
+│   ├── a2a-ollama-runner.example.sh ← Example CLI runner for local Ollama models
+│   ├── a2a-ping.sh                 ← Health check: verify session is still active
+│   ├── a2a-send.sh                 ← Send message + wait for DELIVERED confirmation
 │   ├── a2a-set-headless.sh         ← Set autonomous mode room rule (suppresses all prompts)
 │   ├── a2a-supervisor.sh           ← Wrapper that launches the local session supervisor
-│   ├── a2a-send.sh                 ← Send message + wait for DELIVERED confirmation
 │   ├── a2a-wait-message.sh         ← Long-poll the server until a message arrives (single call)
-│   ├── a2a-loop.sh                 ← Smart wait loop: send + wait in one call, filters noise internally
-│   ├── a2a-ping.sh                 ← Health check: verify session is still active
-│   ├── a2a-leave.sh                ← Cleanup: leave room and delete token
 │   └── check-remote.sh             ← Server health check: verify it is reachable
 └── settings/
     ├── claude.json                 ← Permissions template for Claude Code
-    ├── gemini.json                 ← Permissions template for Gemini CLI
-    └── codex.toml                  ← Permissions template for Codex CLI
+    ├── codex.toml                  ← Permissions template for Codex CLI
+    └── gemini.json                 ← Permissions template for Gemini CLI
 ```
 
 This layout means you can **drop the skill into any existing project** without touching your project's root config files — the agent reads its own settings template and merges only what is needed.

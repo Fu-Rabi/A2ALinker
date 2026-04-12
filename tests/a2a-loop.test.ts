@@ -60,7 +60,7 @@ echo "DELIVERED"
         }
     });
 
-    it('continues past join notifications until a real message arrives', () => {
+    it('surfaces join notifications immediately', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-test-'));
         const scriptDir = path.join(root, 'scripts');
         const stateFile = path.join(root, 'wait-state');
@@ -94,10 +94,6 @@ MESSAGE_RECEIVED
 └────
 EOF
 `);
-        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
-echo "DELIVERED"
-`);
-
         try {
             const result = withJoinToken('tok_test_join', () => spawnSync(
                 'bash',
@@ -106,8 +102,7 @@ echo "DELIVERED"
             ));
 
             expect(result.status).toBe(0);
-            expect(result.stdout).toContain('Ready for the next task');
-            expect(result.stdout).not.toContain('has joined');
+            expect(result.stdout).toContain("HOST 'Agent-abcd' has joined. Session is live!");
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }

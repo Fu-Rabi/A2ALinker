@@ -90,7 +90,7 @@ function normalizeSupervisorReply(rawReply) {
     return `${reply} [OVER]`;
 }
 function parseLoopEvent(output) {
-    const trimmed = stripDeliveredPrefix(output).trim();
+    const trimmed = output.trim();
     if (trimmed.startsWith('TIMEOUT_ROOM_ALIVE')) {
         const match = trimmed.match(/last_seen_ms=(\d+)/);
         return {
@@ -129,9 +129,6 @@ function parseLoopEvent(output) {
         speaker,
         body,
     };
-}
-function stripDeliveredPrefix(output) {
-    return output.replace(/^(?:DELIVERED\s*\n)+/, '');
 }
 function emitUiEvent(options, event) {
     const rendered = (0, supervisor_ui_1.renderUiEvent)(event, options.renderOptions);
@@ -263,6 +260,15 @@ function emitPolicyNotice(options, session, policy) {
             `broker=${policy.brokerEndpoint}`,
             `runner=${policy.runnerKind ?? 'unset'}`,
         ],
+    });
+}
+function emitDeliveredNotice(options) {
+    emitUiEvent(options, {
+        type: 'notice',
+        level: 'info',
+        label: 'DELIVERED',
+        detail: 'Message accepted by broker.',
+        layout: 'line',
     });
 }
 function emitApprovalRequiredNotice(options, normalizedSummary, reason, grantCandidates) {
@@ -540,7 +546,10 @@ async function runSupervisor(options) {
                 appendTranscript(session, `POLICY:\n${evaluation.decision}: ${evaluation.reason}\n`);
                 appendTranscript(session, `${resolved.agentLabel.toUpperCase()}:\n${refusal}\n`);
                 emitReply(resolved, resolved.agentLabel, refusal);
-                nextEvent = await runLoopScript(resolved, session, session.role, refusal);
+                await runSendScript(resolved, session, session.role, refusal);
+                appendTranscript(session, 'DELIVERY:\nMessage accepted by broker.\n');
+                emitDeliveredNotice(resolved);
+                nextEvent = await runLoopScript(resolved, session, session.role);
                 continue;
             }
             const prompt = buildRunnerPrompt({
@@ -555,6 +564,9 @@ async function runSupervisor(options) {
             appendTranscript(session, `${resolved.agentLabel.toUpperCase()}:\n${reply}\n`);
             emitReply(resolved, resolved.agentLabel, reply);
             const { signal } = splitReply(reply);
+            await runSendScript(resolved, session, session.role, reply);
+            appendTranscript(session, 'DELIVERY:\nMessage accepted by broker.\n');
+            emitDeliveredNotice(resolved);
             writeSessionMetadata(session, {
                 status: 'waiting',
                 lastReplySignal: signal ?? 'OVER',
@@ -563,7 +575,7 @@ async function runSupervisor(options) {
                 status: 'connected',
                 lastEvent: `reply_${signal ?? 'OVER'}`,
             });
-            nextEvent = await runLoopScript(resolved, session, session.role, reply);
+            nextEvent = await runLoopScript(resolved, session, session.role);
         }
         return session;
     }
@@ -724,13 +736,23 @@ async function getInitialHostEvent(options, session, connectionStatus) {
     }
     const opening = `Hello from ${options.agentLabel}. Please help with this task: ${options.goal} [OVER]`;
     if (connectionStatus === 'ready') {
-        return runLoopScript(options, session, 'host', opening);
+        appendTranscript(session, `${options.agentLabel.toUpperCase()}:\n${opening}\n`);
+        emitReply(options, options.agentLabel, opening);
+        await runSendScript(options, session, 'host', opening);
+        appendTranscript(session, 'DELIVERY:\nMessage accepted by broker.\n');
+        emitDeliveredNotice(options);
+        return runLoopScript(options, session, 'host');
     }
     for (;;) {
         const waitResult = await runScript(options, 'a2a-wait-message.sh', ['host'], session);
         const output = waitResult.stdout.trim();
         if (output.startsWith('MESSAGE_RECEIVED') && output.includes('[SYSTEM]') && output.toLowerCase().includes('joined')) {
-            return runLoopScript(options, session, 'host', opening);
+            appendTranscript(session, `${options.agentLabel.toUpperCase()}:\n${opening}\n`);
+            emitReply(options, options.agentLabel, opening);
+            await runSendScript(options, session, 'host', opening);
+            appendTranscript(session, 'DELIVERY:\nMessage accepted by broker.\n');
+            emitDeliveredNotice(options);
+            return runLoopScript(options, session, 'host');
         }
         if (output.startsWith('TIMEOUT_PING_FAILED')) {
             await sleep(5_000);
@@ -744,10 +766,15 @@ async function getInitialHostEvent(options, session, connectionStatus) {
         }
     }
 }
-async function runLoopScript(options, session, role, message) {
-    const args = message ? [role, message] : [role];
-    const result = await runScript(options, 'a2a-loop.sh', args, session);
+async function runLoopScript(options, session, role) {
+    const result = await runScript(options, 'a2a-loop.sh', [role], session);
     return parseLoopEvent(result.stdout);
+}
+async function runSendScript(options, session, role, message) {
+    const result = await runScript(options, 'a2a-send.sh', [role, message], session);
+    if (result.stdout.trim() !== 'DELIVERED') {
+        throw new Error(`Unsupported send output: ${result.stdout.trim()}`);
+    }
 }
 async function runRunner(options, session, prompt, incomingMessage) {
     const promptPath = path_1.default.join(session.sessionDir, 'runner-prompt.txt');

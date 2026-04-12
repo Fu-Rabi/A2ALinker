@@ -28,6 +28,9 @@ function createTempLayout(): {
     const runnerPath = path.join(root, 'runner.js');
     fs.mkdirSync(scriptDir, { recursive: true });
     fs.mkdirSync(sessionRoot, { recursive: true });
+    writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "DELIVERED"
+`);
     return { root, scriptDir, sessionRoot, runnerPath };
 }
 
@@ -65,23 +68,15 @@ describe('supervisor helpers', () => {
         expect(event.body).toBe('Investigate the bug');
     });
 
-    it('parses send-plus-wait loop output with a delivered prefix', () => {
-        const event = parseLoopEvent([
+    it('rejects delivery prefixes because sending is handled separately', () => {
+        expect(() => parseLoopEvent([
             'DELIVERED',
             'MESSAGE_RECEIVED',
             '┌─ Agent-abcd [OVER]',
             '│',
             '│ Second probe',
             '└────',
-        ].join('\n'));
-
-        expect(event.type).toBe('message');
-        if (event.type !== 'message') {
-            throw new Error('Expected message event');
-        }
-        expect(event.speaker).toBe('Agent-abcd');
-        expect(event.signal).toBe('OVER');
-        expect(event.body).toBe('Second probe');
+        ].join('\n'))).toThrow('Unsupported loop output');
     });
 
     it('parses broker system messages as control events', () => {
@@ -169,8 +164,11 @@ EOF
   exit 0
 fi
 
-echo "$2" >> "${sentLogPath}"
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0
@@ -205,14 +203,23 @@ process.stdout.write('I found the failing assertion and fixed it. [STANDBY]\\n')
     it('records a session grant after local approval and persists it in the policy file', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
         const sentLogPath = path.join(root, 'sent.log');
+        const loopStatePath = path.join(root, 'loop-state');
 
         writeExecutable(path.join(scriptDir, 'a2a-join-connect.sh'), `#!/bin/bash
 echo "STATUS: (2/2 connected)"
 echo "HEADLESS: true"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
-if [ -z "$2" ]; then
-  cat <<'EOF'
+STATE_FILE="${loopStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT=$(cat "$STATE_FILE")
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+
+if [ "$COUNT" -eq 1 ]; then
+cat <<'EOF'
 MESSAGE_RECEIVED
 ┌─ Agent-host [OVER]
 │
@@ -222,8 +229,11 @@ EOF
   exit 0
 fi
 
-echo "$2" >> "${sentLogPath}"
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0
@@ -333,11 +343,7 @@ EOF
 fi
 
 if [ "$COUNT" -eq 2 ]; then
-  cat <<EOF >> "${sentLogPath}"
-$2
-EOF
   cat <<'EOF'
-DELIVERED
 MESSAGE_RECEIVED
 ┌─ Agent-host [OVER]
 │
@@ -347,10 +353,11 @@ EOF
   exit 0
 fi
 
-cat <<EOF >> "${sentLogPath}"
-$2
-EOF
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0
@@ -403,8 +410,11 @@ MESSAGE_RECEIVED
 EOF
 `);
         writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
-echo "$2" >> "${sentLogPath}"
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0
@@ -625,11 +635,7 @@ EOF
 fi
 
 if [ "$COUNT" -eq 2 ]; then
-  cat <<EOF >> "${sentLogPath}"
-$2
-EOF
   cat <<'EOF'
-DELIVERED
 MESSAGE_RECEIVED
 ┌─ Agent-host [OVER]
 │
@@ -639,10 +645,11 @@ EOF
   exit 0
 fi
 
-cat <<EOF >> "${sentLogPath}"
-$2
-EOF
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0
@@ -687,7 +694,7 @@ echo "STATUS: (2/2 connected)"
 echo "HEADLESS: true"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
-if [ -z "$2" ]; then
+if [ ! -f "${waitingMarkerPath}" ]; then
   cat <<'EOF'
 MESSAGE_RECEIVED
 ┌─ Agent-host [OVER]
@@ -698,10 +705,13 @@ EOF
   exit 0
 fi
 
-echo "$2" >> "${sentLogPath}"
-touch "${waitingMarkerPath}"
 sleep 1
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+touch "${waitingMarkerPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0
@@ -738,14 +748,23 @@ exit 0
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
         const infoLogs: string[] = [];
         const errorLogs: string[] = [];
+        const loopStatePath = path.join(root, 'loop-state');
 
         writeExecutable(path.join(scriptDir, 'a2a-join-connect.sh'), `#!/bin/bash
 echo "STATUS: (2/2 connected)"
 echo "HEADLESS: true"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
-if [ -z "$2" ]; then
-  cat <<'EOF'
+STATE_FILE="${loopStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT=$(cat "$STATE_FILE")
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+
+if [ "$COUNT" -eq 1 ]; then
+cat <<'EOF'
 MESSAGE_RECEIVED
 ┌─ Agent-host [OVER]
 │
@@ -784,6 +803,7 @@ exit 0
         expect(infoLogs.some((entry) => entry.includes('INBOUND  Agent-host  [OVER]'))).toBe(true);
         expect(infoLogs.some((entry) => entry.includes('│ Visible first line'))).toBe(true);
         expect(infoLogs.some((entry) => entry.includes('OUTBOUND  codex  [STANDBY]'))).toBe(true);
+        expect(infoLogs.some((entry) => entry.includes('DELIVERED  Message accepted by broker.'))).toBe(true);
         expect(infoLogs.some((entry) => entry.includes('Handled visibly'))).toBe(true);
         expect(infoLogs.some((entry) => entry.includes('SESSION CLOSED'))).toBe(true);
         expect(errorLogs).toEqual([]);
@@ -1021,8 +1041,11 @@ EOF
   exit 0
 fi
 
-echo "$2" >> "${sentLogPath}"
 echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
 `);
         writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
 exit 0

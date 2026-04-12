@@ -51,13 +51,8 @@ while true; do
 
   if echo "$RESULT" | grep -q '^MESSAGE_RECEIVED'; then
     if echo "$RESULT" | grep -q '\[SYSTEM'; then
-      LOWER_RESULT=$(printf '%s' "$RESULT" | tr '[:upper:]' '[:lower:]')
-      if echo "$LOWER_RESULT" | grep -q 'has joined\|session is live'; then
-        PING_FAIL_COUNT=0
-        continue  # Connection notification — loop silently
-      fi
       PING_FAIL_COUNT=0
-      echo "$RESULT"  # Pause/close/alert notifications are terminal to the caller
+      echo "$RESULT"
       exit 0
     fi
     echo "$RESULT"
