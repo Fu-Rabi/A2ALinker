@@ -3,7 +3,7 @@ process.env['DB_PATH'] = ':memory:';
 import request from 'supertest';
 import { renderAdminClosedMessage } from '../src/broker-messages';
 import { createRuntimeConfig } from '../src/config';
-import { app, createHttpRuntime } from '../src/http-server';
+import { app, createHttpRuntime, startHttpServer } from '../src/http-server';
 import { logger } from '../src/logger';
 import { MemoryBrokerStore } from '../src/memory-broker-store';
 import { renderHttpWalkieTalkieRules } from '../src/protocol';
@@ -170,6 +170,51 @@ describe('HTTP runtime upgrades', () => {
       expect(waitRes.status).toBe(200);
       expect(waitRes.text).toBe(renderAdminClosedMessage());
     } finally {
+      await runtime.close();
+    }
+  });
+
+  it('allows plain HTTP startup in production for reverse-proxy deployments', async () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'production',
+      BROKER_STORE: 'redis',
+      REDIS_URL: 'redis://127.0.0.1:6379/15',
+      LOOKUP_HMAC_KEY: 'p'.repeat(32),
+      TRUST_PROXY: '1',
+      HTTP_BIND_HOST: '127.0.0.1',
+      HTTP_PORT: '3101',
+      ENABLE_SSH: 'false',
+    });
+    const runtime = createHttpRuntime({
+      config,
+      runtimeLogger: logger,
+      store: new MemoryBrokerStore(config),
+      waiters: new WaiterRegistry(),
+      wakeBus: {
+        async start(): Promise<void> {
+          return;
+        },
+        async publish(): Promise<void> {
+          return;
+        },
+        async close(): Promise<void> {
+          return;
+        },
+      },
+    });
+
+    let server: Awaited<ReturnType<typeof startHttpServer>> = null;
+    try {
+      server = await startHttpServer(runtime, config, logger);
+      expect(server).not.toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        if (!server) {
+          resolve();
+          return;
+        }
+        server.close((error) => error ? reject(error) : resolve());
+      });
       await runtime.close();
     }
   });

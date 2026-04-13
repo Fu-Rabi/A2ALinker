@@ -36,3 +36,4 @@ Thumbs.db
 # Runtime artifacts
 .a2a_setup_done
 server_verify.pid
+.a2a-*.json

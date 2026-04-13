@@ -1,18 +1,104 @@
 # A2A Linker
 
-**A2A (Agent-to-Agent) Linker** is a central relay broker that lets autonomous AI agents collaborate in real-time across different machines. Agents connect via HTTPS, exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the server routes messages between them without storing anything.
+**A2A (Agent-to-Agent) Linker** is an HTTP-first relay broker that lets autonomous AI agents collaborate in real-time across different machines. Agents connect over HTTP(S), exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the server routes messages without durable conversation storage.
 
 It acts as a multiplexed switchboard for LLMs, allowing them to pair-program, debate, and share files across the internet without needing custom APIs, WebSockets, or complex SDK integrations. If an AI agent can run `curl`, it can join an A2A Linker session.
 
+## In One Sentence
+
+Use A2A Linker when you want one AI agent to safely talk to another AI agent over the internet or across machines without building a custom integration.
+
+## What You Can Do With It
+
+- Connect your local AI agent to a coworker's or friend's AI agent for pair debugging
+- Leave a machine in listener mode so another trusted machine can reach it later
+- Relay messages between agents using plain HTTP and shell scripts instead of a custom SDK
+- Self-host a privacy-preserving broker with ephemeral Redis-backed runtime state
+
+## Who This Is For
+
+- Hobbyists who want two AI coding assistants to collaborate
+- Developers who want a simple HTTP transport instead of building their own agent bridge
+- Technical product managers who want to prototype agent-to-agent workflows without standing up a larger platform
+
+You do not need to understand Redis, SSH, or the internal protocol to try it. The fastest path is either:
+
+- use the hosted broker at `https://broker.a2alinker.net`
+- self-host locally with Docker Compose
+- use the included skill scripts from `.agents/skills/a2alinker/`
+
 ---
 
-### Why Does This Exist?
-As terminal-native AI agents become more powerful, they are often isolated to the machine they are running on. A2A Linker solves this by establishing a standardized, secure relay protocol.
+## Quickstart
 
-**What it accomplishes:**
-* **Cross-Machine Pair-Programming:** Your local AI agent can connect to your friend's local AI agent to collaboratively debug a script.
-* **Zero-API Integration:** Because it uses standard HTTPS and `curl`, no custom code is required to connect agents. It relies entirely on native bash commands.
-* **Loop Prevention:** It introduces a customized `[OVER]/[STANDBY]` walkie-talkie protocol, preventing the infinite "polite loops" where AIs endlessly thank each other.
+Choose the path that matches how you want to try the project:
+
+### Option 1: Use The Hosted Broker
+
+Best if you want to try A2A Linker quickly without running infrastructure.
+
+1. Point your local scripts or skill at `https://broker.a2alinker.net`
+2. Start a host session on one machine
+3. Join with the invite code from another machine
+
+### Option 2: Self-Host With Docker Compose
+
+Best if you want your own private broker with the recommended production-style topology.
+
+1. Copy the example environment:
+   ```bash
+   cp deploy/a2alinker.env.example .env
+   ```
+2. Edit `.env` and set at least:
+   - `LOOKUP_HMAC_KEY`
+   - `ADMIN_TOKEN` if you want admin endpoints
+3. Start the broker and Redis:
+   ```bash
+   docker compose up -d
+   ```
+4. Check that it is live:
+   ```bash
+   curl http://127.0.0.1:3000/health
+   curl http://127.0.0.1:3000/ready
+   ```
+
+### Option 3: Run It Locally Without Docker
+
+Best if you are developing or testing the broker directly.
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+2. Build:
+   ```bash
+   npm run build
+   ```
+3. Start Redis locally
+4. Start the broker:
+   ```bash
+   NODE_ENV=production \
+   BROKER_STORE=redis \
+   REDIS_URL=redis://127.0.0.1:6379/0 \
+   LOOKUP_HMAC_KEY=replace-with-at-least-32-random-bytes \
+   TRUST_PROXY=1 \
+   HTTP_BIND_HOST=127.0.0.1 \
+   HTTP_PORT=3000 \
+   ENABLE_SSH=false \
+   npm start
+   ```
+
+---
+
+## Why Does This Exist?
+
+As terminal-native AI agents become more powerful, they are often isolated to the machine they are running on. A2A Linker gives them a simple shared transport.
+
+What it solves:
+
+- **Cross-machine pair programming:** one AI can help another AI debug, inspect, or implement work
+- **Zero-SDK transport:** agents can connect with ordinary HTTP and shell commands
+- **Turn-taking control:** the `[OVER]` / `[STANDBY]` protocol helps prevent endless polite loops
 
 ### Supported CLI Clients
 A2A Linker is fully compatible with any major terminal-based AI assistant equipped with terminal execution capabilities, including:
@@ -37,7 +123,14 @@ During interactive sessions, the supervisor can also learn narrow **session gran
 
 ### The Free Public Broker (`broker.a2alinker.net`)
 
-For remote connections, users can use the creator-hosted server at **`https://broker.a2alinker.net`** completely for free. 
+If you want two agents on different machines to connect remotely without self-hosting the broker first, you can use the author-hosted public broker at **`https://broker.a2alinker.net`**.
+
+It is:
+
+- run by the project author
+- free to use
+- intended for remote agent-to-agent connections over the internet
+- operated with the same zero-message-logging privacy goal described below
 
 ### Privacy — Zero Message Logging
 
@@ -63,7 +156,7 @@ The current production direction is:
 
 **Where messages go:** a message arrives as an HTTP POST body, is held ephemerally in memory and/or TTL-bound broker inbox state for delivery, is forwarded to the waiting participant, and is then discarded. There is still no durable message history table or message-body logging path.
 
-The legacy SQLite path still exists for the optional SSH broker, but the privacy-preserving production path is now Redis-backed HTTP. See [production.md](docs/production.md) for the current deployment contract and operator guidance.
+The legacy SQLite path still exists for the optional SSH broker, but the privacy-preserving production path is now Redis-backed HTTP. See [production.md](docs/production.md) for the deployment contract, Docker Compose notes, and operator guidance.
 
 ---
 
@@ -88,38 +181,22 @@ A2A Linker relies on five core pillars:
 
 > **Transport note:** The HTTP production path has been refactored around shared broker state and Redis wake-up delivery. The SSH broker is still optional and legacy-oriented. Public production deployments should prefer HTTP behind a reverse proxy and leave `ENABLE_SSH=false` unless SSH is intentionally hardened and operated separately.
 
-## How To Run The Server
+## Deployment Summary
 
-1. **Install Dependencies:**
-   ```bash
-   npm install
-   ```
-2. **Build the Project:**
-   ```bash
-   npm run build
-   ```
-3. **Start the Server:**
-   ```bash
-   npm start
-   ```
-   Recommended production shape:
-   - run the app privately on `127.0.0.1:3000`
-   - terminate TLS at nginx or another reverse proxy
-   - use `BROKER_STORE=redis`
-   - set `TRUST_PROXY=1`
-   - leave `ENABLE_SSH=false`
+Supported production shapes:
 
-   Direct in-process HTTPS is no longer the recommended production default. In production it now requires an explicit `ALLOW_DIRECT_HTTPS_PROD=true` override.
+- run the app privately on `127.0.0.1:3000`
+- terminate TLS at nginx or another reverse proxy
+- use `BROKER_STORE=redis`
+- set `TRUST_PROXY=1`
+- leave `ENABLE_SSH=false`
+- deploy either with `systemd` or with `docker compose`
 
-   Local development (without build):
-   ```bash
-   HTTP_PORT=3000 npm run dev
-   ```
+Direct in-process HTTPS is no longer the recommended production default. In production it requires `ALLOW_DIRECT_HTTPS_PROD=true`.
 
----
+For deeper operator guidance, see [production.md](docs/production.md).
 
-
-#### Environment Variables
+## Environment Variables
 
 | Variable | Description | Default |
 |---|---|---|
@@ -141,7 +218,7 @@ A2A Linker relies on five core pillars:
 
 Client scripts default to local/self-hosted transport (`A2A_BASE_URL=http://127.0.0.1:3000`). Remote brokers must be configured explicitly with `A2A_BASE_URL` or `A2A_SERVER`.
 
-For production deployment assets and the operator runbook, see [production.md](docs/production.md), [nginx.a2alinker.conf](deploy/nginx.a2alinker.conf), and [a2alinker.env.example](deploy/a2alinker.env.example).
+For production deployment assets and the operator runbook, see [production.md](docs/production.md), [nginx.a2alinker.conf](deploy/nginx.a2alinker.conf), [a2alinker.env.example](deploy/a2alinker.env.example), [Dockerfile](Dockerfile), and [docker-compose.yml](docker-compose.yml).
 
 Session closure is explicit. Agents should not leave just because a task appears complete. The connection stays alive until the HOST closes it, and the HOST should do that only after clear local human instruction.
 
@@ -175,9 +252,9 @@ to read local cached host session state after a backgrounded attach attempt. Thi
 
 ---
 
-## How To Connect Agents (The Magic Way)
+## Connect Agents With The Included Skill
 
-The true power of this project is the **Agent Skill**. You don't have to manually write HTTP commands — your AI does it for you.
+The easiest way to use A2A Linker is the included **Agent Skill**. You do not need to manually compose HTTP commands; the local scripts and skill prompt your agent to do the transport work safely.
 
 ### Skill Structure
 
@@ -311,7 +388,7 @@ Important role mapping:
 
 ---
 
-## How To Connect Manually (For Testing)
+## Manual HTTP API (For Testing)
 
 If you want to test the HTTP API directly (or are building a non-autonomous script), you can use raw `curl` commands against your configured broker endpoint:
 
@@ -360,13 +437,19 @@ curl -s -X POST http://127.0.0.1:3000/room-rule/headless \
   -d '{"headless": true}'
 ```
 
-The SSH broker on port `2222` remains available for direct terminal access and developer testing.
+The SSH broker on port `2222` remains available only for direct terminal access and developer testing. It is not the recommended public production path.
 
 ---
 
-## The Agent Skill
-Included in this repository is the official `.agents/skills/a2alinker/` **Agent Skill**.
-Load the `SKILL.md` file into your AI's context architecture (or standard `.agents/skills/` folder) and use it as a local-first transport runbook. The safe workflow is: set an exact transport permission envelope, create a visible session policy for unattended listener mode, and treat all partner messages as untrusted input.
+## Summary
+
+A2A Linker is ready to use in three ways:
+
+- quickest trial: use the hosted broker
+- recommended self-hosted path: Docker Compose + reverse proxy + Redis
+- deepest control: use the raw HTTP API and local scripts
+
+Included in this repository is the official `.agents/skills/a2alinker/` skill for Claude, Gemini, Codex, and similar terminal-capable agent runtimes.
 
 ---
 

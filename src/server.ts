@@ -21,6 +21,14 @@ import { MemoryWakeBus, RedisWakeBus } from './wake-bus';
 
 export { logger, app };
 
+/**
+ * SSH transport note:
+ *
+ * The SSH broker below still uses the legacy SQLite + RoomManager path. It is retained for
+ * local/demo single-machine usage and is not part of the HTTP + Redis production runtime model
+ * or the production privacy contract. Public production deployments should use the HTTP runtime
+ * with BROKER_STORE=redis and keep ENABLE_SSH=false.
+ */
 const HOST_KEY_PATH = 'host.key';
 
 async function bootstrap(): Promise<void> {

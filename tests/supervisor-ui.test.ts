@@ -47,9 +47,24 @@ describe('supervisor-ui', () => {
     });
 
     it('defaults to plain mode when stdout is not a tty', () => {
-        const options = getDefaultRenderOptions();
+        const originalDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
 
-        expect(options.plainMode).toBe(true);
-        expect(options.colorEnabled).toBe(false);
+        Object.defineProperty(process.stdout, 'isTTY', {
+            configurable: true,
+            value: false,
+        });
+
+        try {
+            const options = getDefaultRenderOptions();
+
+            expect(options.plainMode).toBe(true);
+            expect(options.colorEnabled).toBe(false);
+        } finally {
+            if (originalDescriptor) {
+                Object.defineProperty(process.stdout, 'isTTY', originalDescriptor);
+            } else {
+                delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY;
+            }
+        }
     });
 });

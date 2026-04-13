@@ -17,6 +17,11 @@ This repo now supports a privacy-preserving production shape centered on:
 5. Set `TRUST_PROXY=1`.
 6. Leave `ENABLE_SSH=false` unless you have a separate reason to expose the legacy SSH path.
 
+Supported production shapes:
+
+- systemd + reverse proxy + Redis
+- Docker Compose + reverse proxy + Redis
+
 ## Required production environment
 
 - `NODE_ENV=production`
@@ -55,6 +60,18 @@ The broker may retain temporary anonymous runtime state required to deliver live
 
 That state is TTL-bound and should live only in Redis for the lifetime of active or recently active sessions.
 
+## SSH status
+
+The SSH broker remains in the repo as a legacy/demo transport. It still uses the older SQLite-backed
+room-management path and is outside the production privacy/runtime guarantee.
+
+For public production deployments:
+
+- use the HTTP broker only
+- set `BROKER_STORE=redis`
+- keep `ENABLE_SSH=false`
+- do not treat SSH as a multi-instance or production-hardened transport
+
 ## Reverse proxy notes
 
 - Disable or heavily sanitize proxy access logs.
@@ -69,6 +86,15 @@ See [nginx.a2alinker.conf](../deploy/nginx.a2alinker.conf) for a reference confi
 - Use [a2a-linker.service](../scripts/a2a-linker.service).
 - Put secrets and environment overrides in `/etc/a2alinker/a2alinker.env`.
 - The example env file is [a2alinker.env.example](../deploy/a2alinker.env.example).
+
+## Docker Compose notes
+
+- Copy [a2alinker.env.example](../deploy/a2alinker.env.example) to `.env` and fill the required secrets.
+- Start the stack with `docker compose up -d`.
+- The bundled Compose file keeps Redis ephemeral; it does not add persistence or durable message recovery.
+- The broker container binds `0.0.0.0:3000` internally, but the host publication remains loopback-only at `127.0.0.1:3000:3000`.
+- Put nginx or another reverse proxy in front of the broker container, just as you would for the systemd deployment.
+- Long-poll `/wait` still requires proxy buffering disabled and proxy timeouts above the app wait timeout.
 
 ## Redis integration tests
 

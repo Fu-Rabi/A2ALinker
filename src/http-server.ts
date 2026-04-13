@@ -674,11 +674,6 @@ export async function startHttpServer(runtime: HttpRuntime, config: RuntimeConfi
     }
   }
 
-  if (config.isProduction && !config.allowInsecureHttpLocalDev) {
-    runtimeLogger.error('broker_startup_failed', { component: 'http' });
-    return null;
-  }
-
   return await new Promise<http.Server>((resolve) => {
     const server = http.createServer(serverApp).listen(config.httpPort, config.httpBindHost, () => {
       runtimeLogger.info('http_server_started', { https: false, port: config.httpPort, bindHost: config.httpBindHost });
