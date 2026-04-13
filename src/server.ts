@@ -196,7 +196,7 @@ function handleCommand(token: string, command: string, stream: any) {
 
         const redeemResult = redeemInvite(inviteCode);
         if (!redeemResult) {
-            logger.error(`[A2ALinker:Server] Token '${token}' tried invalid/expired invite '${inviteCode}'`);
+            logger.warn(`[A2ALinker:Server] Invalid or expired invite code attempt`);
             stream.write(`\r\nError: Invite code '${inviteCode}' is invalid or has already been used.\r\n`);
             stream.exit(1);
             stream.end();
