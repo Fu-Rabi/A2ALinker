@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.git/
+.env
+*.env
+host.key
+linker.db
+*.db
+tests/
+docs/
+deploy/
+scripts/
+examples/
+coverage/
+*.md
