@@ -8,6 +8,11 @@ function writeExecutable(filePath: string, contents: string): void {
     fs.chmodSync(filePath, 0o755);
 }
 
+function copyFile(sourcePath: string, destinationPath: string): void {
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    fs.copyFileSync(sourcePath, destinationPath);
+}
+
 describe('A2A shell script usage guards', () => {
     it('forwards unattended listener intent to the supervisor as --headless true', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-headless-'));
@@ -160,6 +165,52 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
         expect(capturedArgs).toContain('--help');
         expect(capturedArgs).not.toContain('--runner-command');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('passes the packaged runtime target when the wrapper falls back without repo dist or src', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-packaged-'));
+        const binDir = path.join(root, 'bin');
+        const capturedArgsPath = path.join(root, 'captured-args');
+        const repoRoot = process.cwd();
+        const packagedRuntimePath = path.join(root, '.agents/skills/a2alinker/runtime/a2a-supervisor.js');
+        fs.mkdirSync(binDir, { recursive: true });
+
+        copyFile(
+            path.join(repoRoot, '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'),
+            path.join(root, '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'),
+        );
+        copyFile(
+            path.join(repoRoot, '.agents/skills/a2alinker/scripts/a2a-common.sh'),
+            path.join(root, '.agents/skills/a2alinker/scripts/a2a-common.sh'),
+        );
+        copyFile(
+            path.join(repoRoot, '.agents/skills/a2alinker/runtime/a2a-supervisor.js'),
+            packagedRuntimePath,
+        );
+
+        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+printf '%s\n' "$@" > "${capturedArgsPath}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(root, '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--help'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8').trim().split('\n');
+        expect(path.resolve(root, capturedArgs[0])).toBe(packagedRuntimePath);
+        expect(capturedArgs).toContain('--help');
 
         fs.rmSync(root, { recursive: true, force: true });
     });
@@ -682,6 +733,33 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
         expect(result.stdout).toContain('ROLE: join');
         expect(result.stdout).toContain('LISTENER_CODE: listen_demo123');
         expect(result.stdout).toContain('a2a-loop.sh join');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('reports the broker endpoint and curl exit code when listener setup cannot reach the relay', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-listen-error-'));
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+
+        writeExecutable(path.join(binDir, 'curl'), '#!/bin/bash\nexit 6\n');
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-listen.sh', 'true'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('ERROR: Cannot reach A2A Linker server at https://broker.a2alinker.net (curl exit 6)');
 
         fs.rmSync(root, { recursive: true, force: true });
     });

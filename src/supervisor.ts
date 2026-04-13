@@ -1034,6 +1034,13 @@ function resolveBrokerEndpoint(env: NodeJS.ProcessEnv): string {
   return 'http://127.0.0.1:3000';
 }
 
+function getExplicitBrokerEndpoint(env: NodeJS.ProcessEnv): string | undefined {
+  if (env['A2A_BASE_URL']?.trim() || env['A2A_SERVER']?.trim()) {
+    return resolveBrokerEndpoint(env);
+  }
+  return undefined;
+}
+
 function parseListEnv(value: string | undefined, fallback: string[]): string[] {
   if (!value?.trim()) {
     return fallback;
@@ -1042,6 +1049,7 @@ function parseListEnv(value: string | undefined, fallback: string[]): string[] {
 }
 
 function loadOrCreatePolicy(options: MutableSupervisorOptions, session: SessionState): SessionPolicy {
+  const explicitBrokerEndpoint = getExplicitBrokerEndpoint(options.env);
   if (fs.existsSync(session.policyPath)) {
     let existing = hydrateSessionPolicy(JSON.parse(fs.readFileSync(session.policyPath, 'utf8')) as SessionPolicy);
     if (options.runnerCommand && existing.runnerCommand !== options.runnerCommand) {
@@ -1049,6 +1057,12 @@ function loadOrCreatePolicy(options: MutableSupervisorOptions, session: SessionS
         ...existing,
         ...(options.runnerKind ? { runnerKind: options.runnerKind } : {}),
         runnerCommand: options.runnerCommand,
+      };
+    }
+    if (explicitBrokerEndpoint && existing.brokerEndpoint !== explicitBrokerEndpoint) {
+      existing = {
+        ...existing,
+        brokerEndpoint: explicitBrokerEndpoint,
       };
     }
     if (!isPolicyExpired(existing)) {
@@ -1157,10 +1171,11 @@ function writeSessionArtifact(
   const current = fs.existsSync(artifactPath)
     ? (JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Partial<SessionArtifact>)
     : {};
+  const explicitBrokerEndpoint = getExplicitBrokerEndpoint(options.env);
   const now = new Date().toISOString();
   const shared = {
     status: patch.status ?? current.status ?? 'starting',
-    brokerEndpoint: patch.brokerEndpoint ?? current.brokerEndpoint ?? resolveBrokerEndpoint(options.env),
+    brokerEndpoint: patch.brokerEndpoint ?? explicitBrokerEndpoint ?? current.brokerEndpoint ?? resolveBrokerEndpoint(options.env),
     headless: patch.headless ?? current.headless ?? options.headless,
     sessionDir: session.sessionDir,
     pid: patch.pid !== undefined ? patch.pid : current.pid ?? process.pid,

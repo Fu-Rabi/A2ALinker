@@ -28,7 +28,7 @@ resolve_supervisor_command() {
   fi
 
   if [ -f "$SKILL_SUPERVISOR_JS" ]; then
-    printf 'node\n%s\n' "$SKILL_SUPERVISOR_JS"
+    printf 'node\n\n%s\n' "$SKILL_SUPERVISOR_JS"
     return 0
   fi
 
@@ -338,6 +338,21 @@ fi
 SUPERVISOR_BIN="$(printf '%s\n' "$SUPERVISOR_INFO" | sed -n '1p')"
 SUPERVISOR_EXTRA="$(printf '%s\n' "$SUPERVISOR_INFO" | sed -n '2p')"
 SUPERVISOR_TARGET="$(printf '%s\n' "$SUPERVISOR_INFO" | sed -n '3p')"
+
+case "$SUPERVISOR_BIN" in
+  node)
+    if [ -z "$SUPERVISOR_TARGET" ]; then
+      echo "ERROR: supervisor launcher resolved 'node' without a target script." >&2
+      exit 1
+    fi
+    ;;
+  npx)
+    if [ -z "$SUPERVISOR_EXTRA" ] || [ -z "$SUPERVISOR_TARGET" ]; then
+      echo "ERROR: supervisor launcher resolved 'npx' without the required tool and target." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 HAS_RUNNER=false
 HAS_RUNNER_KIND=false

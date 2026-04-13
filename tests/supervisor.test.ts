@@ -524,6 +524,112 @@ exit 0
         expect(artifact.status).toBe('closed');
     });
 
+    it('refreshes a persisted listener policy broker when the current launch explicitly selects a different broker', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+
+        fs.writeFileSync(path.join(root, '.a2a-listener-policy.json'), JSON.stringify({
+            version: 1,
+            mode: 'pre-authorized-listener',
+            createdAt: '2026-04-11T00:00:00.000Z',
+            expiresAt: '2099-04-11T00:00:00.000Z',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            workspaceRoot: root,
+            allowedCommands: ['npm test'],
+            allowedPaths: [root],
+            allowRepoEdits: true,
+            allowTestsBuilds: true,
+            denyNetworkExceptBroker: true,
+            allowRemoteTriggerWithinScope: true,
+            runnerKind: 'custom',
+            runnerCommand: 'node "stale-runner.js"',
+            sessionGrants: [],
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST has closed the session. You are disconnected.
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'codex-like',
+            runnerCommand: `node "${runnerPath}"`,
+            runnerKind: 'custom',
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_BASE_URL: 'https://broker.a2alinker.net',
+            },
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const policy = JSON.parse(fs.readFileSync(path.join(root, '.a2a-listener-policy.json'), 'utf8')) as Record<string, string>;
+        expect(policy.brokerEndpoint).toBe('https://broker.a2alinker.net');
+    });
+
+    it('refreshes a persisted listener artifact broker when the current launch explicitly selects a different broker', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+
+        fs.writeFileSync(path.join(root, '.a2a-listener-session.json'), JSON.stringify({
+            mode: 'listen',
+            status: 'error',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            headless: true,
+            sessionDir: path.join(root, 'old-session'),
+            pid: 999999,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            listenerCode: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST has closed the session. You are disconnected.
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'codex-like',
+            runnerCommand: `node "${runnerPath}"`,
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_BASE_URL: 'https://broker.a2alinker.net',
+            },
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-listener-session.json'), 'utf8')) as Record<string, string>;
+        expect(artifact.brokerEndpoint).toBe('https://broker.a2alinker.net');
+    });
+
     it('allows host attach with a listener code and no goal, then waits without sending a synthetic opening', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
         const sentLogPath = path.join(root, 'sent.log');

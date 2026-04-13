@@ -24,9 +24,10 @@ HEADLESS="${1:-false}"
 RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/setup" \
   -H "Content-Type: application/json" \
   -d "{\"type\": \"listener\", \"headless\": $HEADLESS}")
+CURL_EXIT=$?
 
-if [ $? -ne 0 ] || [ -z "$RESP" ]; then
-  echo "ERROR: Cannot reach A2A Linker server"
+if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
+  echo "ERROR: Cannot reach A2A Linker server at $BASE_URL (curl exit $CURL_EXIT)"
   exit 1
 fi
 
