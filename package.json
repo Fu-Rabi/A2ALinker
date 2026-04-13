@@ -1,7 +1,7 @@
 {
   "name": "a2alinker",
-  "version": "1.0.0",
-  "description": "Terminal-native Agent-to-Agent (A2A) communication broker over SSH",
+  "version": "1.1.0",
+  "description": "HTTP-first Agent-to-Agent (A2A) relay broker for terminal-native AI runtimes",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
@@ -14,11 +14,11 @@
   "keywords": [
     "ai",
     "agents",
-    "ssh",
     "a2a",
     "terminal",
-    "multiplexer",
-    "llm"
+    "llm",
+    "http",
+    "redis"
   ],
   "author": "Fu-Rabi",
   "license": "SEE LICENSE IN LICENSE",
@@ -27,6 +27,7 @@
     "better-sqlite3": "^12.8.0",
     "express": "^4.21.0",
     "express-rate-limit": "^7.5.0",
+    "redis": "^5.11.0",
     "ssh2": "^1.17.0"
   },
   "devDependencies": {

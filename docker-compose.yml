@@ -1,0 +1,31 @@
+# Copy deploy/a2alinker.env.example to .env, fill the required secrets, then run:
+# docker compose up -d
+services:
+  broker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      BROKER_STORE: redis
+      REDIS_URL: redis://redis:6379/0
+      TRUST_PROXY: "1"
+      # Inside a container the app must bind all interfaces; host exposure stays loopback-only below.
+      HTTP_BIND_HOST: 0.0.0.0
+      HTTP_PORT: "3000"
+      ENABLE_SSH: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

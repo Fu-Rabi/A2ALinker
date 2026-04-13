@@ -412,12 +412,16 @@ describe('HTTP wait/send behavior', () => {
                 .get('/wait')
                 .set('Authorization', `Bearer ${joinToken}`);
 
+            let timeout: NodeJS.Timeout | null = null;
             const secondWaitRes = await Promise.race([
                 secondWaitPromise,
                 new Promise<never>((_, reject) => {
-                    setTimeout(() => reject(new Error('Timed out waiting for forced joiner disconnect')), 3500);
+                    timeout = setTimeout(() => reject(new Error('Timed out waiting for forced joiner disconnect')), 3500);
                 }),
             ]);
+            if (timeout) {
+                clearTimeout(timeout);
+            }
 
             expect(secondWaitRes.status).toBe(200);
             expect(secondWaitRes.text).toContain('HOST has closed the session');

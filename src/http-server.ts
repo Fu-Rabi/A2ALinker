@@ -1,591 +1,683 @@
 import express, { Request, Response } from 'express';
+import http from 'http';
 import https from 'https';
 import fs from 'fs';
-import crypto from 'crypto';
-import rateLimit from 'express-rate-limit';
-import { resolveHttpsCertPaths } from './https-config';
-import { logger } from './logger';
-import { resetLoopCounter, trackOutgoingMessage } from './loop-detection';
+import net from 'net';
+import { BrokerStore } from './broker-store';
+import { createRuntimeConfig, RuntimeConfig } from './config';
+import { logger, PrivacyLogger } from './logger';
+import { MemoryBrokerStore } from './memory-broker-store';
+import { createAnonymousBucketId, createLookupId } from './runtime-ids';
+import { WaiterRegistry } from './waiter-registry';
+import { MemoryWakeBus, WakeBus } from './wake-bus';
+import { renderDrainMessage } from './broker-messages';
 import { renderHttpWalkieTalkieRules } from './protocol';
-import {
-  registerUser,
-  isValidToken,
-  createSecureRoom,
-  createListenerRoom,
-  redeemInvite,
-  getPairedRoom,
-  pairTokenToRoom,
-  destroyToken,
-  destroyRoom,
-  setRoomHeadless,
-  getRoomHeadless,
-  getRoomCreatorToken,
-  setupUserAndRoom,
-  registerAndJoin,
-} from './db';
 
-const WALKIE_TALKIE_RULES = renderHttpWalkieTalkieRules();
-
-interface QueuedMessage {
-  text: string; // complete ready-to-send string, prefixed with MESSAGE_RECEIVED\n
+interface HttpRuntimeDeps {
+  config: RuntimeConfig;
+  runtimeLogger: PrivacyLogger;
+  store: BrokerStore;
+  waiters: WaiterRegistry;
+  wakeBus: WakeBus;
 }
 
-interface HttpParticipant {
-  token: string;
-  name: string;                 // "Agent-xxxx" (token.substring(4, 8))
-  roomName: string;
-  isHost: boolean;              // true = created the room, owns session lifecycle
-  standby: boolean;
-  recentShortMessageCount: number;
-  lastSeen: number;             // Date.now() — updated on every /send or /wait call
-  messageQueue: QueuedMessage[];
-  pendingWait: {
-    res: Response;
-    timer: NodeJS.Timeout;
-  } | null;
-}
-
-function redactSecret(secret: string): string {
-  if (!secret) {
-    return '[redacted]';
-  }
-  if (secret.length <= 8) {
-    return '[redacted]';
-  }
-  return `${secret.slice(0, 4)}…${secret.slice(-4)}`;
-}
-
-function detachTimer(timer: NodeJS.Timeout): NodeJS.Timeout {
-  timer.unref();
-  return timer;
-}
-
-// Global map: token → HttpParticipant
-const participants = new Map<string, HttpParticipant>();
-
-// TTL sweep: 30 minutes inactivity = disconnect (increased for complex AI tasks)
-const PARTICIPANT_TTL_MS = 30 * 60 * 1000;
-const TTL_SWEEP_INTERVAL_MS = 60 * 1000;
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, p] of participants.entries()) {
-    if (now - p.lastSeen > PARTICIPANT_TTL_MS) {
-      logger.info(`[A2ALinker:HTTP] TTL expired for '${p.name}' in room '${p.roomName}'`);
-      handleLeave(token);
-    }
-  }
-}, TTL_SWEEP_INTERVAL_MS).unref(); // unref so interval doesn't prevent process exit
-
-function findPartner(roomName: string, senderToken: string): HttpParticipant | undefined {
-  for (const p of participants.values()) {
-    if (p.roomName === roomName && p.token !== senderToken) return p;
-  }
-  return undefined;
-}
-
-function deliverToParticipant(p: HttpParticipant, text: string): void {
-  if (p.pendingWait) {
-    const { res, timer } = p.pendingWait;
-    clearTimeout(timer);
-    p.pendingWait = null;
-    res.send(text);
-  } else {
-    p.messageQueue.push({ text });
-  }
-}
-
-function resolveParticipantWait(p: HttpParticipant, text: string): void {
-  if (!p.pendingWait) {
-    return;
-  }
-  const { res, timer } = p.pendingWait;
-  clearTimeout(timer);
-  p.pendingWait = null;
-  res.send(text);
-}
-
-function buildSelfLeaveMessage(p: HttpParticipant, forcedByHost: boolean): string {
-  if (forcedByHost && !p.isHost) {
-    return 'MESSAGE_RECEIVED\n[SYSTEM]: HOST has closed the session. You are disconnected.\n';
-  }
-  return 'MESSAGE_RECEIVED\n[SYSTEM]: Session ended. You are disconnected.\n';
-}
-
-function handleLeave(token: string, forcedByHost: boolean = false): void {
-  const p = participants.get(token);
-  if (!p) return;
-
-  resolveParticipantWait(p, buildSelfLeaveMessage(p, forcedByHost));
-
-  const partner = findPartner(p.roomName, token);
-  participants.delete(token);
-
-  // Notify partner with role-aware message
-  if (partner) {
-    const msg = p.isHost
-      ? `MESSAGE_RECEIVED\n[SYSTEM]: HOST has closed the session. You are disconnected.\n`
-      : `MESSAGE_RECEIVED\n[SYSTEM]: '${p.name}' has left the room. Session ended.\n`;
-    deliverToParticipant(partner, msg);
-
-    // HOST leaving forces JOINER out too — give them 2s to read the message
-    if (p.isHost) {
-      detachTimer(setTimeout(() => handleLeave(partner.token, true), 2_000));
-      return; // room destruction handled when JOINER is evicted
-    }
-  }
-
-  // Start reaper if room is now empty
-  const roomHasParticipants = Array.from(participants.values()).some(
-    (p2) => p2.roomName === p.roomName,
-  );
-  if (!roomHasParticipants) {
-    logger.info(`[A2ALinker:HTTP] Room '${p.roomName}' is empty. Starting 30s destruction timer.`);
-    detachTimer(setTimeout(() => {
-      logger.info(`[A2ALinker:HTTP] Destroying abandoned room '${p.roomName}'`);
-      destroyRoom(p.roomName);
-      // destroyRoom cascades and removes users in that room, but the departing
-      // token itself may already be removed from participants — destroy it explicitly
-      // to leave no orphan rows.
-      destroyToken(token);
-    }, 30_000));
-  } else {
-    // Room still has other participants — this token is departing and no longer
-    // paired. Destroy it immediately so it doesn't linger in the DB.
-    destroyToken(token);
-  }
+export interface HttpRuntime {
+  app: express.Express;
+  initialize(): Promise<void>;
+  beginDrain(): Promise<void>;
+  close(): Promise<void>;
+  isDraining(): boolean;
 }
 
 function getToken(req: Request): string | null {
   const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return null;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return null;
+  }
+
   return auth.slice(7);
 }
 
-const app = express();
-app.use(express.text({ limit: '1mb' }));
-
-// Rate limiters — keyed by IP. Limits are relaxed in test mode (DB_PATH=:memory:).
-const isTestMode = process.env['DB_PATH'] === ':memory:';
-
-const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: isTestMode ? 1000 : 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many registrations from this IP. Try again later.' },
-});
-
-const createLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: isTestMode ? 1000 : 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many rooms created from this IP. Try again later.' },
-});
-
-const joinLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: isTestMode ? 1000 : 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many join attempts from this IP. Try again later.' },
-});
-
-// GET /health
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
-
-// POST /register
-app.post('/register', registerLimiter, (_req, res) => {
-  const token = 'tok_' + crypto.randomBytes(6).toString('hex');
-  registerUser(token);
-  logger.info(`[A2ALinker:HTTP] Registered token ${redactSecret(token)}`);
-  res.json({ token });
-});
-
-// POST /setup — one-shot registration + room creation
-app.post('/setup', createLimiter, express.json({ limit: '1mb' }), (req, res) => {
-  const body = req.body as { type: 'standard' | 'listener', headless?: boolean };
-  if (!body.type || (body.type !== 'standard' && body.type !== 'listener')) {
-    res.status(400).json({ error: 'type (standard|listener) required' });
-    return;
+function normalizeAnonymousBucket(ip: string, config: RuntimeConfig): string {
+  const normalized = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  if (net.isIPv4(normalized)) {
+    const octets = normalized.split('.');
+    return createAnonymousBucketId(`${octets[0]}.${octets[1]}.${octets[2]}.0`, 'ipv4', config.lookupHmacKey);
   }
 
-  const result = setupUserAndRoom(body.type, !!body.headless);
-  if (!result) {
-    res.status(429).json({ error: 'Room limit reached (max 3)' });
-    return;
+  if (net.isIPv6(normalized)) {
+    const groups = normalized.split(':').slice(0, 4).join(':');
+    return createAnonymousBucketId(`${groups}::`, 'ipv6', config.lookupHmacKey);
   }
 
-  const { token, code, roomName } = result;
-
-  // Create HttpParticipant for the creator
-  participants.set(token, createHttpParticipant(token, roomName, body.type === 'standard'));
-
-  logger.info(`[A2ALinker:HTTP] One-shot setup: token '${redactSecret(token)}' created ${body.type} room '${roomName}' with code '${redactSecret(code)}'`);
-  res.json({ token, code, roomName, role: body.type === 'standard' ? 'host' : 'joiner' });
-});
-
-// POST /create
-app.post('/create', createLimiter, (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  if (getPairedRoom(token)) {
-    res.status(400).json({ error: 'Already paired to a session' });
-    return;
-  }
-  const result = createSecureRoom(token);
-  if (!result) {
-    res.status(429).json({ error: 'Room limit reached (max 3)' });
-    return;
-  }
-  const { inviteCode, internalRoomName } = result;
-  pairTokenToRoom(token, internalRoomName);
-
-  // Create HttpParticipant for HOST
-  participants.set(token, createHttpParticipant(token, internalRoomName, true));
-
-  logger.info(`[A2ALinker:HTTP] Token '${redactSecret(token)}' created room '${internalRoomName}' with invite '${redactSecret(inviteCode)}'`);
-  res.json({ inviteCode, roomName: internalRoomName });
-});
-
-// POST /listen — JOINER pre-stages a room. Redeemer of the listen_ code becomes HOST.
-app.post('/listen', createLimiter, (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  if (getPairedRoom(token)) {
-    res.status(400).json({ error: 'Already paired to a session' });
-    return;
-  }
-  const result = createListenerRoom(token);
-  if (!result) {
-    res.status(429).json({ error: 'Room limit reached (max 3)' });
-    return;
-  }
-  const { listenerCode, internalRoomName } = result;
-  pairTokenToRoom(token, internalRoomName);
-
-  // Creator waits as JOINER — redeemer of the listen_ code becomes HOST
-  participants.set(token, createHttpParticipant(token, internalRoomName, false));
-
-  logger.info(`[A2ALinker:HTTP] Token '${redactSecret(token)}' created listener room '${internalRoomName}' with code '${redactSecret(listenerCode)}'`);
-  res.json({ listenerCode, roomName: internalRoomName });
-});
-
-// POST /room-rule/headless — HOST sets autonomous mode room rule
-app.post('/room-rule/headless', createLimiter, express.json({ limit: '1mb' }), (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  const participant = participants.get(token);
-  if (!participant) {
-    res.status(400).json({ error: 'Not in a room' });
-    return;
-  }
-  const creatorToken = getRoomCreatorToken(participant.roomName);
-  if (creatorToken !== token) {
-    res.status(403).json({ error: 'Only the room creator can set room rules' });
-    return;
-  }
-  const body = req.body as { headless?: boolean };
-  if (typeof body.headless !== 'boolean') {
-    res.status(400).json({ error: 'headless (boolean) required' });
-    return;
-  }
-  setRoomHeadless(participant.roomName, body.headless);
-  logger.info(`[A2ALinker:HTTP] Room '${participant.roomName}' headless rule set to ${body.headless}`);
-  res.json({ ok: true });
-});
-
-// POST /join/:inviteCode
-app.post('/join/:inviteCode', joinLimiter, (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  if (getPairedRoom(token)) {
-    res.status(400).json({ error: 'Already paired to a session' });
-    return;
-  }
-  const inviteCode = req.params['inviteCode'];
-  if (!inviteCode) {
-    res.status(400).json({ error: 'Invite code required' });
-    return;
-  }
-  const redeemResult = redeemInvite(inviteCode);
-  if (!redeemResult) {
-    res.status(404).json({ error: 'Invite code invalid or already used' });
-    return;
-  }
-  const { roomName, codeType } = redeemResult;
-  const redeemerIsHost = codeType === 'listener'; // listener code redeemer becomes HOST
-  const headless = getRoomHeadless(roomName);
-
-  pairTokenToRoom(token, roomName);
-
-  const joinerName = `Agent-${token.substring(4, 8)}`;
-
-  // Create HttpParticipant — role determined by code type
-  participants.set(token, createHttpParticipant(token, roomName, redeemerIsHost));
-
-  logger.info(`[A2ALinker:HTTP] Token '${redactSecret(token)}' joined room '${roomName}' as ${redeemerIsHost ? 'HOST' : 'JOINER'}`);
-
-  // Notify the waiting participant that their partner has connected
-  const partner = findPartner(roomName, token);
-  if (partner) {
-    const msg = redeemerIsHost
-      ? `MESSAGE_RECEIVED\n[SYSTEM]: HOST '${joinerName}' has joined. Session is live!\n`
-      : `MESSAGE_RECEIVED\n[SYSTEM]: Partner '${joinerName}' has joined. Session is live!\n`;
-    deliverToParticipant(partner, msg);
-  }
-
-  res.json({
-    roomName,
-    role: redeemerIsHost ? 'host' : 'joiner',
-    headless,
-    rules: WALKIE_TALKIE_RULES,
-    status: partner ? '(2/2 connected)' : '(1/2 connected)',
-  });
-});
-
-// POST /register-and-join/:inviteCode — one-shot registration + join
-app.post('/register-and-join/:inviteCode', joinLimiter, (req, res) => {
-  const inviteCode = req.params['inviteCode'];
-  if (!inviteCode) {
-    res.status(400).json({ error: 'Invite code required' });
-    return;
-  }
-
-  // Atomic: burn invite, register user, pair token — all or nothing
-  const result = registerAndJoin(inviteCode);
-  if (!result) {
-    res.status(404).json({ error: 'Invite code invalid or already used' });
-    return;
-  }
-
-  const { token, roomName, codeType, headless } = result;
-  const redeemerIsHost = codeType === 'listener';
-
-  const joinerName = `Agent-${token.substring(4, 8)}`;
-  participants.set(token, createHttpParticipant(token, roomName, redeemerIsHost));
-
-  const partner = findPartner(roomName, token);
-  if (partner) {
-    const msg = redeemerIsHost
-      ? `MESSAGE_RECEIVED\n[SYSTEM]: HOST '${joinerName}' has joined. Session is live!\n`
-      : `MESSAGE_RECEIVED\n[SYSTEM]: Partner '${joinerName}' has joined. Session is live!\n`;
-    deliverToParticipant(partner, msg);
-  }
-
-  logger.info(`[A2ALinker:HTTP] One-shot register-and-join: token '${redactSecret(token)}' joined room '${roomName}'`);
-  res.json({
-    token,
-    roomName,
-    role: redeemerIsHost ? 'host' : 'joiner',
-    headless,
-    rules: WALKIE_TALKIE_RULES,
-    status: partner ? '(2/2 connected)' : '(1/2 connected)',
-  });
-});
-
-// POST /send
-app.post('/send', (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  const sender = participants.get(token);
-  if (!sender) {
-    res.status(400).json({ error: 'Not in a room' });
-    return;
-  }
-  sender.lastSeen = Date.now();
-
-  const rawBody = req.body as string;
-  if (!rawBody || typeof rawBody !== 'string') {
-    res.status(400).json({ error: 'Message body required' });
-    return;
-  }
-
-  const partner = findPartner(sender.roomName, token);
-  if (!partner) {
-    res.status(503).json({ error: 'Partner not connected' });
-    return;
-  }
-
-  // === [OVER] / [STANDBY] Protocol ===
-  let data = rawBody;
-  let signaled: 'OVER' | 'STANDBY' | null = null;
-
-  if (data.match(/\[STANDBY\]/i)) {
-    signaled = 'STANDBY';
-    data = data.replace(/\[STANDBY\]/gi, '').trim();
-    sender.standby = true;
-  } else if (data.match(/\[OVER\]/i)) {
-    signaled = 'OVER';
-    data = data.replace(/\[OVER\]/gi, '').trim();
-    sender.standby = false;
-  } else {
-    sender.standby = false;
-  }
-
-  // Check all-standby — broadcast mute to both, then continue delivery
-  if (sender.standby && partner.standby) {
-    logger.info(`[A2ALinker:HTTP] All-standby in room '${sender.roomName}'`);
-    const muteMsg = `MESSAGE_RECEIVED\n[SYSTEM]: Both agents have signaled STANDBY. Session paused. A human must intervene to resume.\n`;
-    deliverToParticipant(sender, muteMsg);
-    deliverToParticipant(partner, muteMsg);
-    // Continue — do NOT stop here (match RoomManager behaviour exactly)
-  }
-
-  // === Loop Detection ===
-  if (trackOutgoingMessage(sender, data.length)) {
-    logger.info(`[A2ALinker:HTTP] Loop detected in room '${sender.roomName}'`);
-    resetLoopCounter(sender);
-    sender.standby = true;
-    partner.standby = true;
-    const alertMsg = `MESSAGE_RECEIVED\n[SYSTEM ALERT]: Repetitive short messages detected. Conversation forcibly paused. Human intervention required.\n`;
-    deliverToParticipant(sender, alertMsg);
-    deliverToParticipant(partner, alertMsg);
-    res.status(429).send('SYSTEM: Repetitive messages detected. Session forcibly paused.');
-    return;
-  }
-
-  // Format message box
-  const signalBadge = signaled === 'OVER' ? ' [OVER]' : signaled === 'STANDBY' ? ' [STANDBY]' : '';
-  const lines = data.split('\n').map((l) => `│ ${l}`).join('\n');
-  const messageText = `MESSAGE_RECEIVED\n┌─ ${sender.name}${signalBadge}\n│\n${lines}\n└────\n`;
-
-  // Deliver to partner; receiving a message resets their short-message counter
-  deliverToParticipant(partner, messageText);
-  resetLoopCounter(partner);
-
-  res.send('DELIVERED');
-});
-
-// GET /wait
-app.get('/wait', (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  const participant = participants.get(token);
-  if (!participant) {
-    res.status(400).json({ error: 'Not in a room' });
-    return;
-  }
-  participant.lastSeen = Date.now();
-
-  // Return queued message immediately if available
-  if (participant.messageQueue.length > 0) {
-    const msg = participant.messageQueue.shift();
-    if (msg) {
-      res.send(msg.text);
-      return;
-    }
-  }
-
-  // Hold connection open until message arrives or timeout
-  const timer = setTimeout(() => {
-    participant.pendingWait = null;
-    res.send('TIMEOUT: No event received within 110s');
-  }, 110_000);
-
-  participant.pendingWait = { res, timer };
-
-  // Detect client disconnect — clear pending state, do NOT call leaveRoom
-  req.on('close', () => {
-    if (participant.pendingWait) {
-      clearTimeout(participant.pendingWait.timer);
-      participant.pendingWait = null;
-    }
-  });
-});
-
-// POST /leave
-app.post('/leave', (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  handleLeave(token);
-  res.json({ ok: true });
-});
-
-// GET /ping
-app.get('/ping', (req, res) => {
-  const token = getToken(req);
-  if (!token || !isValidToken(token)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  const participant = participants.get(token);
-  if (!participant) {
-    // Not in a room — session was closed
-    res.status(400).json({ error: 'Not in a room' });
-    return;
-  }
-  const partner = findPartner(participant.roomName, token);
-  res.json({
-    room_alive: true,
-    partner_connected: !!partner,
-    partner_last_seen_ms: partner ? Date.now() - partner.lastSeen : null,
-  });
-});
-
-export { app };
-export { redactSecret };
-
-export function startHttpServer(): void {
-  const HTTP_PORT = parseInt(process.env.HTTP_PORT || '443', 10);
-  const { keyPath, certPath } = resolveHttpsCertPaths();
-
-  try {
-    const key = fs.readFileSync(keyPath);
-    const cert = fs.readFileSync(certPath);
-    https.createServer({ key, cert }, app).listen(HTTP_PORT, () => {
-      logger.info(`[A2ALinker] HTTPS API running on port ${HTTP_PORT}`);
-    });
-  } catch (error) {
-    const allowInsecureLocalDev = process.env['ALLOW_INSECURE_HTTP_LOCAL_DEV'] === 'true';
-    logger.warn(`[A2ALinker] HTTPS certs unavailable at '${keyPath}' and '${certPath}'.`);
-    if (error instanceof Error) {
-      logger.warn(`[A2ALinker] HTTPS startup detail: ${error.message}`);
-    }
-    if (!allowInsecureLocalDev) {
-      logger.error('[A2ALinker] Refusing to start without TLS. Set ALLOW_INSECURE_HTTP_LOCAL_DEV=true for explicit local development.');
-      return;
-    }
-    app.listen(HTTP_PORT, () => {
-      logger.info(`[A2ALinker] HTTP API running on port ${HTTP_PORT} (local dev — no cert, using plain HTTP)`);
-    });
-  }
+  return createAnonymousBucketId('unknown', 'ipv4', config.lookupHmacKey);
 }
 
-function createHttpParticipant(token: string, roomName: string, isHost: boolean): HttpParticipant {
-  return {
-    token,
-    name: `Agent-${token.substring(4, 8)}`,
-    roomName,
-    isHost,
-    standby: false,
-    recentShortMessageCount: 0,
-    lastSeen: Date.now(),
-    messageQueue: [],
-    pendingWait: null,
+function appendPrometheusMetric(lines: string[], name: string, type: 'gauge' | 'counter', value: number): void {
+  lines.push(`# TYPE ${name} ${type}`);
+  lines.push(`${name} ${value}`);
+}
+
+export function createHttpRuntime({
+  config,
+  runtimeLogger,
+  store,
+  waiters,
+  wakeBus,
+}: HttpRuntimeDeps): HttpRuntime {
+  const app = express();
+  let initialized = false;
+  let draining = false;
+
+  app.set('trust proxy', config.trustProxy);
+  app.use(express.text({ limit: '1mb', type: 'text/plain' }));
+
+  const lookupIdForToken = (token: string): string => createLookupId(token, config.lookupHmacKey);
+
+  const publishWakeTokens = async (tokens: string[]): Promise<void> => {
+    await Promise.all(tokens.map((wakeToken) => wakeBus.publish({
+      recipientLookupId: lookupIdForToken(wakeToken),
+    })));
   };
+
+  const consumeWake = async (recipientLookupId: string): Promise<void> => {
+    if (!waiters.has(recipientLookupId)) {
+      return;
+    }
+
+    const token = waiters.getToken(recipientLookupId);
+    if (!token) {
+      return;
+    }
+
+    const message = await store.consumeInbox(token);
+    if (!message) {
+      return;
+    }
+
+    await store.clearWaiterOwner(token, config.instanceId);
+    waiters.resolve(recipientLookupId, message);
+  };
+
+  const enforceAnonymousRateLimit = async (
+    req: Request,
+    res: Response,
+    scope: string,
+    max: number,
+    windowMs: number,
+  ): Promise<boolean> => {
+    const bucket = normalizeAnonymousBucket(req.ip || 'unknown', config);
+    const decision = await store.consumeRateLimit(
+      scope,
+      bucket,
+      windowMs,
+      config.nodeEnv === 'test' ? 1000 : max,
+    );
+    if (decision.allowed) {
+      return true;
+    }
+
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    runtimeLogger.warn('rate_limit_hit', { scope });
+    res.status(429).json({ error: 'Too many requests. Try again later.' });
+    return false;
+  };
+
+  const enforceTokenRateLimit = async (
+    req: Request,
+    res: Response,
+    scope: string,
+    max: number,
+    windowMs: number,
+  ): Promise<string | null> => {
+    const token = getToken(req);
+    if (!token) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return null;
+    }
+
+    const decision = await store.consumeRateLimit(
+      scope,
+      token,
+      windowMs,
+      config.nodeEnv === 'test' ? 1000 : max,
+    );
+    if (decision.allowed) {
+      return token;
+    }
+
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    runtimeLogger.warn('rate_limit_hit', { scope });
+    res.status(429).json({ error: 'Too many requests. Try again later.' });
+    return null;
+  };
+
+  const rejectDuringDrain = async (res: Response, globalOnly: boolean = false): Promise<boolean> => {
+    if (!globalOnly && draining) {
+      res.status(503).json({ error: 'Broker is draining. Try again later.' });
+      return true;
+    }
+
+    if (await store.getDrainMode()) {
+      res.status(503).json({ error: 'Broker is draining. Try again later.' });
+      return true;
+    }
+
+    return false;
+  };
+
+  const requireAdmin = (req: Request, res: Response): boolean => {
+    if (!config.adminToken) {
+      res.status(404).json({ error: 'Not found' });
+      return false;
+    }
+
+    if (req.headers.authorization !== `Bearer ${config.adminToken}`) {
+      res.status(403).json({ error: 'Forbidden' });
+      return false;
+    }
+
+    return true;
+  };
+
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+
+  app.get('/ready', async (_req, res) => {
+    try {
+      if (draining || await store.getDrainMode()) {
+        res.status(503).json({ status: 'draining' });
+        return;
+      }
+
+      res.json({ status: 'ready' });
+    } catch {
+      res.status(503).json({ status: 'unready' });
+    }
+  });
+
+  app.get('/metrics', async (_req, res) => {
+    const metrics = await store.getMetricsSnapshot(waiters.size());
+    const lines: string[] = [];
+    appendPrometheusMetric(lines, 'a2a_active_sessions', 'gauge', metrics.activeSessions);
+    appendPrometheusMetric(lines, 'a2a_waiting_sessions', 'gauge', metrics.waitingSessions);
+    appendPrometheusMetric(lines, 'a2a_open_waiters', 'gauge', metrics.openWaiters);
+    appendPrometheusMetric(lines, 'a2a_queued_inbox_messages', 'gauge', metrics.queuedInboxCount);
+    appendPrometheusMetric(lines, 'a2a_sends_total', 'counter', metrics.sendsTotal);
+    appendPrometheusMetric(lines, 'a2a_waits_total', 'counter', metrics.waitsTotal);
+    appendPrometheusMetric(lines, 'a2a_rate_limit_hits_total', 'counter', metrics.rateLimitHitsTotal);
+    appendPrometheusMetric(lines, 'a2a_drain_mode', 'gauge', metrics.drainMode ? 1 : 0);
+    runtimeLogger.info('metrics_scraped', { activeSessions: metrics.activeSessions, waitingSessions: metrics.waitingSessions });
+    res.type('text/plain').send(lines.join('\n'));
+  });
+
+  app.post('/register', async (req, res) => {
+    if (await rejectDuringDrain(res, true)) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'register', 10, 60 * 60 * 1000)) {
+      return;
+    }
+
+    const token = await store.registerToken();
+    runtimeLogger.info('token_registered');
+    res.json({ token });
+  });
+
+  app.post('/setup', express.json({ limit: '1mb' }), async (req, res) => {
+    if (await rejectDuringDrain(res)) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'setup', 10, 60 * 60 * 1000)) {
+      return;
+    }
+
+    const body = req.body as { type?: 'standard' | 'listener'; headless?: boolean };
+    if (!body.type || (body.type !== 'standard' && body.type !== 'listener')) {
+      res.status(400).json({ error: 'type (standard|listener) required' });
+      return;
+    }
+
+    const result = await store.setupSession(body.type, !!body.headless);
+    if (!result) {
+      res.status(429).json({ error: 'Room limit reached (max 3)' });
+      return;
+    }
+
+    runtimeLogger.info('session_created', { sessionType: body.type });
+    res.json({ token: result.token, code: result.code, roomName: result.roomName, role: result.role });
+  });
+
+  app.post('/create', async (req, res) => {
+    if (await rejectDuringDrain(res)) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'create', 10, 60 * 60 * 1000)) {
+      return;
+    }
+
+    const token = getToken(req);
+    if (!token || !await store.isValidToken(token)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const result = await store.createSession(token, 'standard');
+    if (result === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result === 'already_paired') {
+      res.status(400).json({ error: 'Already paired to a session' });
+      return;
+    }
+
+    runtimeLogger.info('session_created', { sessionType: 'standard' });
+    res.json({ inviteCode: result.code, roomName: result.roomName });
+  });
+
+  app.post('/listen', async (req, res) => {
+    if (await rejectDuringDrain(res)) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'listen', 10, 60 * 60 * 1000)) {
+      return;
+    }
+
+    const token = getToken(req);
+    if (!token || !await store.isValidToken(token)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const result = await store.createSession(token, 'listener');
+    if (result === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result === 'already_paired') {
+      res.status(400).json({ error: 'Already paired to a session' });
+      return;
+    }
+
+    runtimeLogger.info('session_created', { sessionType: 'listener' });
+    res.json({ listenerCode: result.code, roomName: result.roomName });
+  });
+
+  app.post('/room-rule/headless', express.json({ limit: '1mb' }), async (req, res) => {
+    if (await rejectDuringDrain(res)) {
+      return;
+    }
+    const token = await enforceTokenRateLimit(req, res, 'room_rule_headless', 30, 60 * 60 * 1000);
+    if (!token) {
+      return;
+    }
+    if (!await store.isValidToken(token)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const body = req.body as { headless?: boolean };
+    if (typeof body.headless !== 'boolean') {
+      res.status(400).json({ error: 'headless (boolean) required' });
+      return;
+    }
+
+    const result = await store.updateRoomHeadless(token, body.headless);
+    if (result === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result === 'not_in_room') {
+      res.status(400).json({ error: 'Not in a room' });
+      return;
+    }
+    if (result === 'forbidden') {
+      res.status(403).json({ error: 'Only the room creator can set room rules' });
+      return;
+    }
+
+    runtimeLogger.info('room_rule_updated', { headless: body.headless });
+    res.json({ ok: true });
+  });
+
+  app.post('/join/:inviteCode', async (req, res) => {
+    if (await rejectDuringDrain(res)) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'join', 20, 60 * 60 * 1000)) {
+      return;
+    }
+
+    const token = getToken(req);
+    if (!token || !await store.isValidToken(token)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const inviteCode = req.params['inviteCode'];
+    if (!inviteCode) {
+      res.status(400).json({ error: 'Invite code required' });
+      return;
+    }
+
+    const result = await store.joinSession(token, inviteCode);
+    if (result === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result === 'already_paired') {
+      res.status(400).json({ error: 'Already paired to a session' });
+      return;
+    }
+    if (result === 'invalid_code') {
+      runtimeLogger.warn('join_attempt_rejected', { endpoint: 'join' });
+      res.status(404).json({ error: 'Invite code invalid or already used' });
+      return;
+    }
+
+    await publishWakeTokens(result.wakeTokens);
+    runtimeLogger.info('session_joined', { role: result.role });
+    res.json({
+      roomName: result.roomName,
+      role: result.role,
+      headless: result.headless,
+      rules: renderHttpWalkieTalkieRules(),
+      status: result.wakeTokens.length > 0 ? '(2/2 connected)' : '(1/2 connected)',
+    });
+  });
+
+  app.post('/register-and-join/:inviteCode', async (req, res) => {
+    if (await rejectDuringDrain(res)) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'register_and_join', 20, 60 * 60 * 1000)) {
+      return;
+    }
+
+    const inviteCode = req.params['inviteCode'];
+    if (!inviteCode) {
+      res.status(400).json({ error: 'Invite code required' });
+      return;
+    }
+
+    const result = await store.registerAndJoin(inviteCode);
+    if (result === 'invalid_code') {
+      runtimeLogger.warn('join_attempt_rejected', { endpoint: 'register_and_join' });
+      res.status(404).json({ error: 'Invite code invalid or already used' });
+      return;
+    }
+
+    await publishWakeTokens(result.wakeTokens);
+    runtimeLogger.info('session_joined', { role: result.role });
+    res.json({
+      token: result.token,
+      roomName: result.roomName,
+      role: result.role,
+      headless: result.headless,
+      rules: renderHttpWalkieTalkieRules(),
+      status: result.wakeTokens.length > 0 ? '(2/2 connected)' : '(1/2 connected)',
+    });
+  });
+
+  app.post('/send', async (req, res) => {
+    const token = await enforceTokenRateLimit(req, res, 'send_token', 120, 60 * 1000);
+    if (!token) {
+      return;
+    }
+    if (!await enforceAnonymousRateLimit(req, res, 'send_bucket', 600, 60 * 1000)) {
+      return;
+    }
+
+    if (!req.body || typeof req.body !== 'string') {
+      res.status(400).json({ error: 'Message body required' });
+      return;
+    }
+
+    const result = await store.sendMessage(token, req.body);
+    if (result.kind === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result.kind === 'not_in_room') {
+      res.status(400).json({ error: 'Not in a room' });
+      return;
+    }
+    if (result.kind === 'partner_not_connected') {
+      res.status(503).json({ error: 'Partner not connected' });
+      return;
+    }
+
+    await publishWakeTokens(result.wakeTokens);
+    if (result.kind === 'loop_paused') {
+      runtimeLogger.warn('loop_detected', { endpoint: 'send' });
+      res.status(429).send('SYSTEM: Repetitive messages detected. Session forcibly paused.');
+      return;
+    }
+
+    res.send('DELIVERED');
+  });
+
+  app.get('/wait', async (req, res) => {
+    if (draining) {
+      res.status(503).json({ error: 'Broker is draining. Try again later.' });
+      return;
+    }
+
+    const token = await enforceTokenRateLimit(req, res, 'wait', 120, 60 * 1000);
+    if (!token) {
+      return;
+    }
+
+    const touchResult = await store.touchParticipant(token);
+    if (touchResult === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (touchResult === 'not_in_room') {
+      res.status(400).json({ error: 'Not in a room' });
+      return;
+    }
+
+    const queued = await store.consumeInbox(token);
+    if (queued) {
+      res.send(queued);
+      return;
+    }
+
+    const waiterLookupId = lookupIdForToken(token);
+    const timer = setTimeout(async () => {
+      waiters.clear(waiterLookupId);
+      await store.clearWaiterOwner(token, config.instanceId);
+      res.send(`TIMEOUT: No event received within ${Math.floor(config.waitTimeoutMs / 1000)}s`);
+    }, config.waitTimeoutMs);
+    timer.unref();
+
+    if (!waiters.register(waiterLookupId, { token, res, timer })) {
+      clearTimeout(timer);
+      runtimeLogger.warn('wait_rejected', { reason: 'already_pending' });
+      res.status(409).json({ error: 'Wait already pending' });
+      return;
+    }
+
+    await store.incrementWaits();
+    await store.registerWaiterOwner(token, config.instanceId, config.waiterTtlMs);
+
+    req.on('close', () => {
+      waiters.clear(waiterLookupId);
+      void store.clearWaiterOwner(token, config.instanceId);
+    });
+
+    await consumeWake(waiterLookupId);
+  });
+
+  app.post('/leave', async (req, res) => {
+    const token = getToken(req);
+    if (!token) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const result = await store.leaveSession(token);
+    if (result.kind === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result.kind === 'not_in_room') {
+      res.status(400).json({ error: 'Not in a room' });
+      return;
+    }
+
+    await publishWakeTokens(result.wakeTokens);
+    runtimeLogger.info('session_closed', { reason: 'explicit_leave' });
+    res.json({ ok: true });
+  });
+
+  app.get('/ping', async (req, res) => {
+    const token = await enforceTokenRateLimit(req, res, 'ping', 60, 60 * 1000);
+    if (!token) {
+      return;
+    }
+
+    const result = await store.ping(token);
+    if (result.kind === 'unauthorized') {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (result.kind === 'not_in_room') {
+      res.status(400).json({ error: 'Not in a room' });
+      return;
+    }
+
+    res.json({
+      room_alive: true,
+      partner_connected: result.partnerConnected,
+      partner_last_seen_ms: result.partnerLastSeenMs,
+    });
+  });
+
+  app.post('/admin/drain', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!requireAdmin(req, res)) {
+      return;
+    }
+    const body = req.body as { enabled?: boolean };
+    await store.setDrainMode(body.enabled !== false);
+    runtimeLogger.info('drain_started', { enabled: body.enabled !== false });
+    res.json({ ok: true });
+  });
+
+  app.post('/admin/invalidate', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!requireAdmin(req, res)) {
+      return;
+    }
+
+    const body = req.body as { token?: string; code?: string; roomName?: string };
+    const provided = [body.token, body.code, body.roomName].filter((value) => typeof value === 'string');
+    if (provided.length !== 1) {
+      res.status(400).json({ error: 'Exactly one invalidation target is required' });
+      return;
+    }
+
+    const result = body.token
+      ? await store.invalidateByToken(body.token)
+      : body.code
+        ? await store.invalidateByCode(body.code)
+        : await store.invalidateByRoomName(body.roomName as string);
+
+    if (!result.ok) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+
+    await publishWakeTokens(result.wakeTokens);
+    runtimeLogger.info('admin_invalidate', { targetType: body.token ? 'token' : body.code ? 'code' : 'room' });
+    res.json({ ok: true });
+  });
+
+  return {
+    app,
+    async initialize(): Promise<void> {
+      if (initialized) {
+        return;
+      }
+
+      await wakeBus.start(async (event) => {
+        await consumeWake(event.recipientLookupId);
+      });
+      initialized = true;
+    },
+    async beginDrain(): Promise<void> {
+      if (draining) {
+        return;
+      }
+
+      draining = true;
+      runtimeLogger.info('drain_started', { local: true });
+      const drainedTokens = waiters.resolveAll(renderDrainMessage());
+      await Promise.all(drainedTokens.map((token) => store.clearWaiterOwner(token, config.instanceId)));
+      runtimeLogger.info('drain_completed', { drainedWaiters: drainedTokens.length });
+    },
+    async close(): Promise<void> {
+      await Promise.allSettled([wakeBus.close(), store.close()]);
+    },
+    isDraining(): boolean {
+      return draining;
+    },
+  };
+}
+
+function createDefaultTestRuntime(): HttpRuntime {
+  const config = createRuntimeConfig({
+    ...process.env,
+    NODE_ENV: process.env.NODE_ENV ?? 'test',
+    BROKER_STORE: 'memory',
+    LOOKUP_HMAC_KEY: process.env.LOOKUP_HMAC_KEY ?? 'x'.repeat(32),
+  });
+  return createHttpRuntime({
+    config,
+    runtimeLogger: logger,
+    store: new MemoryBrokerStore(config),
+    waiters: new WaiterRegistry(),
+    wakeBus: new MemoryWakeBus(),
+  });
+}
+
+const defaultRuntime = createDefaultTestRuntime();
+void defaultRuntime.initialize();
+
+export const app = defaultRuntime.app;
+
+export async function startHttpServer(runtime: HttpRuntime, config: RuntimeConfig, runtimeLogger: PrivacyLogger): Promise<http.Server | https.Server | null> {
+  await runtime.initialize();
+  const serverApp = runtime.app;
+
+  if (config.httpsKeyPath && config.httpsCertPath) {
+    try {
+      const key = fs.readFileSync(config.httpsKeyPath);
+      const cert = fs.readFileSync(config.httpsCertPath);
+      return await new Promise<https.Server>((resolve) => {
+        const server = https.createServer({ key, cert }, serverApp).listen(config.httpPort, config.httpBindHost, () => {
+          runtimeLogger.info('http_server_started', { https: true, port: config.httpPort, bindHost: config.httpBindHost });
+          resolve(server);
+        });
+      });
+    } catch (error) {
+      runtimeLogger.warn('https_cert_missing', { https: true });
+      if (error instanceof Error) {
+        runtimeLogger.warn('https_startup_detail', { detailLength: error.message.length });
+      }
+      if (!config.allowInsecureHttpLocalDev) {
+        runtimeLogger.error('broker_startup_failed', { component: 'http' });
+        return null;
+      }
+    }
+  }
+
+  return await new Promise<http.Server>((resolve) => {
+    const server = http.createServer(serverApp).listen(config.httpPort, config.httpBindHost, () => {
+      runtimeLogger.info('http_server_started', { https: false, port: config.httpPort, bindHost: config.httpBindHost });
+      resolve(server);
+    });
+  });
 }
