@@ -37,7 +37,7 @@ export class RoomManager {
         if (meta.reaperTimer) {
              clearTimeout(meta.reaperTimer);
              delete meta.reaperTimer;
-             logger.info(`[A2ALinker:RoomManager] Room '${roomName}' destruction aborted! Agent rejoined.`);
+             logger.info('session_joined', { role: 'ssh_rejoin' });
         }
 
         // Enforce hard 2-person limit per room for security
@@ -51,7 +51,7 @@ export class RoomManager {
         meta.participants.push({ channel, name: participantName, standby: false, recentShortMessageCount: 0 });
         this.channelToRoom.set(channel, roomName);
 
-        logger.info(`[A2ALinker:RoomManager] Agent '${participantName}' successfully joined room '${roomName}'`);
+        logger.info('room_joined', { transport: 'ssh' });
 
         // Inject the walkie-talkie rules
         channel.write(renderSshWalkieTalkieRules());
@@ -82,7 +82,7 @@ export class RoomManager {
             this.channelToRoom.delete(channel); // remove O(1) index entry
             this.streamBuffer.cleanup(channel);
 
-            logger.info(`[A2ALinker:RoomManager] Agent '${participantName}' left room '${roomName}'`);
+            logger.info('session_closed', { reason: 'ssh_leave' });
             this.broadcastRaw(roomName, channel, `\r\n[SYSTEM]: '${participantName}' has left the room. Session ended.\r\n`);
         }
 
@@ -96,9 +96,9 @@ export class RoomManager {
         }
 
         if (meta.participants.length === 0) {
-            logger.info(`[A2ALinker:RoomManager] Room '${roomName}' is empty. Starting ${REAPER_GRACE_PERIOD_MS/1000}s destruction timer.`);
+            logger.info('session_closed', { reason: 'ssh_room_empty' });
             meta.reaperTimer = setTimeout(() => {
-                logger.info(`[A2ALinker:RoomManager] ERADICATING abandoned room '${roomName}' and associated credentials from database.`);
+                logger.info('session_closed', { reason: 'ssh_room_reaped' });
                 destroyRoom(roomName);
                 this.rooms.delete(roomName);
             }, REAPER_GRACE_PERIOD_MS);
@@ -123,12 +123,12 @@ export class RoomManager {
             signaled = 'STANDBY';
             data = data.replace(/\[STANDBY\]/gi, '').trim();
             sourceParticipant.standby = true;
-            logger.info(`[A2ALinker:Protocol] '${sourceName}' signaled STANDBY in room '${targetRoom}'`);
+            logger.info('room_rule_updated', { headless: false });
         } else if (data.match(/\[OVER\]/i)) {
             signaled = 'OVER';
             data = data.replace(/\[OVER\]/gi, '').trim();
             sourceParticipant.standby = false;
-            logger.info(`[A2ALinker:Protocol] '${sourceName}' signaled OVER in room '${targetRoom}'`);
+            logger.info('room_rule_updated', { headless: false });
         } else {
             sourceParticipant.standby = false;
         }
@@ -136,14 +136,14 @@ export class RoomManager {
         // Check if ALL participants are in STANDBY — mute the room
         const allStandby = targetMeta.participants.every(p => p.standby);
         if (allStandby) {
-            logger.info(`[A2ALinker:Protocol] All agents in STANDBY in room '${targetRoom}'. Session muted.`);
+            logger.info('session_closed', { reason: 'ssh_all_standby' });
             this.broadcastRaw(targetRoom, null, `\r\n[SYSTEM]: Both agents have signaled STANDBY. Session paused. A human must intervene to resume.\r\n`);
         }
 
         // === Polite Loop Failsafe ===
         // Track per-agent short message count to avoid false positives from cross-agent brief exchanges.
         if (trackOutgoingMessage(sourceParticipant, data.length)) {
-            logger.info(`[A2ALinker:Protocol] Polite loop detected in room '${targetRoom}'. Forcing STANDBY.`);
+            logger.warn('loop_detected', { endpoint: 'ssh' });
             resetLoopCounter(sourceParticipant);
             targetMeta.participants.forEach(p => p.standby = true);
             this.broadcastRaw(targetRoom, null, `\r\n[SYSTEM ALERT]: Repetitive short messages detected. Conversation forcibly paused. Human intervention required.\r\n`);
@@ -154,8 +154,6 @@ export class RoomManager {
         const safeData = data.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
         const signalBadge = signaled === 'OVER' ? ' [OVER]' : signaled === 'STANDBY' ? ' [STANDBY]' : '';
         const formattedData = `\r\n\r\n┌─ ${sourceName}${signalBadge}\r\n│\r\n${safeData.split('\r\n').map(l => `│ ${l}`).join('\r\n')}\r\n└────\r\n`;
-
-        logger.info(`[A2ALinker:Multiplexer] Routing message from '${sourceName}' in room '${targetRoom}' (${data.length} bytes) to ${targetMeta.participants.length - 1} other agent(s)`);
 
         for (const p of targetMeta.participants) {
             if (p.channel !== sourceChannel) {

@@ -4,27 +4,31 @@ After=network.target
 
 [Service]
 Type=simple
-# Process Isolation: Run as unprivileged user
 User=a2a-runner
 Group=a2a-runner
 
-# Adjust this working directory to where you clone the code on the VPS
 WorkingDirectory=/opt/A2ALinker
+EnvironmentFile=-/etc/a2alinker/a2alinker.env
 ExecStart=/usr/bin/npm run start
 
-# Environment variables
 Environment=NODE_ENV=production
-Environment=PORT=2222
-Environment=HTTP_PORT=443
+Environment=BROKER_STORE=redis
+Environment=HTTP_BIND_HOST=127.0.0.1
+Environment=HTTP_PORT=3000
 Environment=PUBLIC_HOST=broker.a2alinker.net
+Environment=ENABLE_SSH=false
 
-# Hardening Systemd directly down
 Restart=on-failure
+RestartSec=5
 ProtectSystem=full
 ProtectHome=true
 NoNewPrivileges=true
-AmbientCapabilities=CAP_NET_BIND_SERVICE
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/A2ALinker
 
 [Install]
 WantedBy=multi-user.target

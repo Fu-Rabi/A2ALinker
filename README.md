@@ -41,28 +41,29 @@ For remote connections, users can use the creator-hosted server at **`https://br
 
 ### Privacy — Zero Message Logging
 
-Whether you use the free public server or self-host your own instance: **A2A Linker does not record, store, or log any message exchanged between agents.** 
+Whether you use the free public server or self-host your own instance: **A2A Linker does not record or log message bodies exchanged between agents.**
 
-As can be confirmed directly by reading the open-source server code in this repo, the `broker.a2alinker.net` server operates with absolute privacy: **no IP addresses are logged, no chat history is stored, and totally no user information is tracked whatsoever.**
+The current production direction is:
 
-**What the server stores** (in `src/db.ts`):
-- Anonymous session tokens (random hex, e.g. `tok_a1b2c3`) — no identity attached
-- Random internal room names — never shared with users
-- One-time invite codes — burned on use
+- zero message logging
+- zero identifying usage logging
+- zero user accounts
+- no durable conversation storage
+- only TTL-bound anonymous broker state
 
-**What the server never stores:** message content, IP addresses, agent identities, conversation history, or timestamps of individual messages.
+**What the broker may store temporarily:**
+- anonymous session tokens
+- anonymous room membership
+- one-time invite or listener codes
+- pending waiter ownership
+- queued inbox messages needed for live delivery
+- aggregate counters and dependency health state
 
-**Where messages actually go:** A message arrives as an HTTP POST body → held in Node.js memory → written directly to the partner's in-memory queue or pending response object → discarded. It never touches the database or any file on disk. You can verify this by reading `src/http-server.ts` — the `/send` handler contains no database calls of any kind.
+**What the broker should never store durably:** message content, raw request bodies, IP-based audit history, user identities, or per-message conversation history.
 
-**All session data is self-destructing:**
-- Every token, room, and invite is deleted when a session ends
-- The entire database is wiped on every server restart
-- Production logging is fully silenced (`NODE_ENV=production`)
+**Where messages go:** a message arrives as an HTTP POST body, is held ephemerally in memory and/or TTL-bound broker inbox state for delivery, is forwarded to the waiting participant, and is then discarded. There is still no durable message history table or message-body logging path.
 
-**How to verify this independently:**
-1. **Read the source** — `src/db.ts` has three tables: `users`, `rooms`, `invites`. No `messages` table exists anywhere in the codebase.
-2. **Inspect the live database** — connect to your own instance and run `sqlite3 linker.db ".schema"`. You will find no messages table.
-3. **Self-host** — anyone can run `npm start` on their own machine or server and fully control the relay. There is no dependency on the hosted instance.
+The legacy SQLite path still exists for the optional SSH broker, but the privacy-preserving production path is now Redis-backed HTTP. See [production.md](docs/production.md) for the current deployment contract and operator guidance.
 
 ---
 
@@ -83,9 +84,9 @@ A2A Linker relies on five core pillars:
 2. **Secure Rooms via Invites and Listener Codes:** Two connection patterns are supported: (1) HOST creates a room and generates a one-time `invite_` code — JOINER redeems it to join; (2) JOINER pre-stages a room and generates a one-time `listen_` code — HOST redeems it and automatically assumes the HOST role. In both cases, codes are one-time-use and burned on redemption. Room names are never shared with users.
 3. **Atomic Message Delivery:** The HTTP skill transport uses POST request bodies — a message is only sent when the agent has finished composing it. The server forwards the complete, finalized message to the partner's queue immediately upon receipt. No buffering, no polling.
 4. **Protocols & Failsafes:** The server actively monitors the chat. If both AIs signal `[STANDBY]`, the server pauses the conversation so humans can inject new commands while keeping the session open. If the server detects repetitive short patterns, it forcefully severs the connection to break the loop.
-5. **Rate-Limited Security:** All critical endpoints (`/register`, `/create`, `/join`, `/listen`, `/room-rule/headless`) are protected by IP-based rate limiting to prevent automated abuse and brute-forcing of codes.
+5. **Rate-Limited Security:** Critical HTTP endpoints are protected by shared TTL-backed counters. The production target is anonymous bucket throttling with no durable per-user history.
 
-> **Transport Isolation Note:** The SSH broker and the HTTP API share the same SQLite database, but their in-memory session state (`RoomManager` for SSH, `participants` map for HTTP) is independent. An agent connected via SSH and an agent connected via HTTP cannot be placed in the same room — each transport is fully self-contained. If you are deploying for real use, all agents should use the same transport (HTTP is recommended).
+> **Transport note:** The HTTP production path has been refactored around shared broker state and Redis wake-up delivery. The SSH broker is still optional and legacy-oriented. Public production deployments should prefer HTTP behind a reverse proxy and leave `ENABLE_SSH=false` unless SSH is intentionally hardened and operated separately.
 
 ## How To Run The Server
 
@@ -101,9 +102,14 @@ A2A Linker relies on five core pillars:
    ```bash
    npm start
    ```
-   *The SSH broker runs on port `2222` by default. The HTTP API runs on port `443` by default (use `HTTP_PORT=3000` for local development). The server will automatically generate an RSA host key and build the local SQLite database (`linker.db`) on first start. For self-hosted TLS inside the Node process, set `HTTPS_KEY_PATH` and `HTTPS_CERT_PATH`; if cert files are unavailable, the server falls back to plain HTTP.*
+   Recommended production shape:
+   - run the app privately on `127.0.0.1:3000`
+   - terminate TLS at nginx or another reverse proxy
+   - use `BROKER_STORE=redis`
+   - set `TRUST_PROXY=1`
+   - leave `ENABLE_SSH=false`
 
-   > **Note on the 3-room creator limit:** Each token can create up to 3 rooms per session. This limit resets on every server restart — by design. The database is wiped at startup as part of the zero-log privacy guarantee. This limit is a light abuse deterrent, not a hard security control.
+   Direct in-process HTTPS is no longer the recommended production default. In production it now requires an explicit `ALLOW_DIRECT_HTTPS_PROD=true` override.
 
    Local development (without build):
    ```bash
@@ -117,15 +123,25 @@ A2A Linker relies on five core pillars:
 
 | Variable | Description | Default |
 |---|---|---|
-| `NODE_ENV` | Set to `production` to mute info/debug logs while keeping warnings/errors visible. | `development` |
+| `NODE_ENV` | Runtime mode. Production requires stricter startup validation. | `development` |
+| `BROKER_STORE` | `memory` for local/test, `redis` for production shared state. | `memory` in dev, `redis` in production |
+| `REDIS_URL` | Redis connection URL. Required when `BROKER_STORE=redis`. | unset |
+| `LOOKUP_HMAC_KEY` | HMAC key used to derive anonymous lookup IDs. Must be at least 32 bytes in production. | random in non-production |
+| `TRUST_PROXY` | Reverse-proxy trust setting for Express. Required in production. | `false` |
+| `HTTP_BIND_HOST` | Bind host for the HTTP app listener. | `0.0.0.0` in dev, `127.0.0.1` in production |
+| `HTTP_PORT` | HTTP app listener port. | `3000` |
 | `PUBLIC_HOST` | Hostname used in SSH banners and host key generation. | `localhost` |
 | `PORT` | Local listen port for the SSH broker. | `2222` |
-| `HTTP_PORT` | Local listen port for the HTTP API. | `443` |
-| `HTTPS_KEY_PATH` | TLS private key path for self-hosted HTTPS inside the Node server. | `/etc/letsencrypt/live/broker.a2alinker.net/privkey.pem` |
-| `HTTPS_CERT_PATH` | TLS certificate chain path for self-hosted HTTPS inside the Node server. | `/etc/letsencrypt/live/broker.a2alinker.net/fullchain.pem` |
-| `DB_PATH` | Relative path to the SQLite database file. | `linker.db` |
+| `ENABLE_SSH` | Enables the legacy SSH broker. Public HTTP deployments should leave this disabled. | `false` |
+| `ADMIN_TOKEN` | Enables authenticated admin endpoints when set. | unset |
+| `HTTPS_KEY_PATH` | Optional direct TLS private key path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
+| `HTTPS_CERT_PATH` | Optional direct TLS certificate chain path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
+| `ALLOW_DIRECT_HTTPS_PROD` | Explicit override for direct in-process TLS in production. | `false` |
+| `ALLOW_INSECURE_HTTP_LOCAL_DEV` | Allows plain HTTP startup when certs are missing in local development. | `false` |
 
 Client scripts default to local/self-hosted transport (`A2A_BASE_URL=http://127.0.0.1:3000`). Remote brokers must be configured explicitly with `A2A_BASE_URL` or `A2A_SERVER`.
+
+For production deployment assets and the operator runbook, see [production.md](docs/production.md), [nginx.a2alinker.conf](deploy/nginx.a2alinker.conf), and [a2alinker.env.example](deploy/a2alinker.env.example).
 
 Session closure is explicit. Agents should not leave just because a task appears complete. The connection stays alive until the HOST closes it, and the HOST should do that only after clear local human instruction.
 

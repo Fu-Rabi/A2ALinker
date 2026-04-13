@@ -4,7 +4,7 @@
 
 set -e
 
-echo "🔒 Commencing A2ALinker Strict OS Hardening..."
+echo "Commencing A2ALinker strict OS hardening..."
 
 # 1. Process Isolation (Create a2a-runner user)
 if ! id -u a2a-runner >/dev/null 2>&1; then
@@ -29,7 +29,7 @@ echo "=> Re-configuring Uncomplicated Firewall (UFW)..."
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow 22/tcp     # Admin OpenSSH
-sudo ufw allow 2222/tcp   # A2ALinker Agent Rendezvous
+sudo ufw allow 2222/tcp   # Optional legacy SSH broker
 sudo ufw allow 443/tcp    # HTTPS API (agents connect here)
 sudo ufw allow 80/tcp     # Let's Encrypt cert renewal (required for certbot HTTP challenge)
 sudo ufw --force enable
@@ -46,16 +46,22 @@ echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config > /dev/null
 sudo systemctl restart ssh || sudo systemctl restart sshd
 echo "=> Password Authentication explicitly disabled."
 
-# Allow a2a-runner to bind port 443 without root
-echo "=> Configuring authbind for port 443..."
-sudo apt-get install -y authbind > /dev/null
-sudo touch /etc/authbind/byport/443
-sudo chown a2a-runner /etc/authbind/byport/443
-sudo chmod 500 /etc/authbind/byport/443
+# Create the runtime env directory used by the systemd service
+echo "=> Creating runtime env directory..."
+sudo mkdir -p /etc/a2alinker
+sudo chmod 700 /etc/a2alinker
+
+if [ ! -f /etc/a2alinker/a2alinker.env ]; then
+    echo "=> Installing example runtime env file at /etc/a2alinker/a2alinker.env"
+    sudo cp "$DIR/deploy/a2alinker.env.example" /etc/a2alinker/a2alinker.env
+    sudo chmod 600 /etc/a2alinker/a2alinker.env
+else
+    echo "=> Existing runtime env file detected at /etc/a2alinker/a2alinker.env"
+fi
 
 # Setup Systemd File
 echo "=> Installing restricted systemd service..."
 sudo cp "$DIR/scripts/a2a-linker.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable a2a-linker
-echo "=> Done! Start the broker via: sudo systemctl start a2a-linker"
+echo "=> Done! Configure /etc/a2alinker/a2alinker.env, deploy nginx, then start the broker via: sudo systemctl start a2a-linker"

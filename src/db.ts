@@ -56,16 +56,6 @@ applyAddColumnMigration(
 );
 
 /**
- * On startup: wipe any tokens that were mid-session when the process last crashed.
- * These are permanently orphaned — their SSH connection never fired 'end'/'close'.
- */
-(function cleanOrphanedSessions() {
-  db.prepare('DELETE FROM invites').run();
-  db.prepare('DELETE FROM rooms').run();
-  db.prepare('DELETE FROM users').run();
-})();
-
-/**
  * Register a new user
  */
 export function registerUser(token: string) {
@@ -174,7 +164,7 @@ export function pairTokenToRoom(token: string, room_internal_name: string) {
  * Returns null if the 3-room limit is already reached.
  */
 export function setupUserAndRoom(type: 'standard' | 'listener', headless: boolean = false): { token: string; roomName: string; code: string } | null {
-  const token = 'tok_' + crypto.randomBytes(6).toString('hex');
+  const token = 'tok_' + crypto.randomBytes(16).toString('hex');
 
   const setupTx = db.transaction(() => {
     // 1. Register User first so FK constraint for creator_token is satisfied
@@ -188,13 +178,13 @@ export function setupUserAndRoom(type: 'standard' | 'listener', headless: boolea
     if (countRow.count >= 3) return null;
 
     // 3. Create Room
-    const internalRoomName = 'room_' + crypto.randomBytes(8).toString('hex');
+    const internalRoomName = 'room_' + crypto.randomBytes(16).toString('hex');
     db.prepare('INSERT INTO rooms (internal_name, creator_token, headless) VALUES (?, ?, ?)')
       .run(internalRoomName, token, headless ? 1 : 0);
 
     // 4. Create Invite/Listener Code
     const codePrefix = type === 'standard' ? 'invite_' : 'listen_';
-    const code = codePrefix + crypto.randomBytes(6).toString('hex');
+    const code = codePrefix + crypto.randomBytes(16).toString('hex');
     const codeType = type === 'standard' ? 'invite' : 'listener';
     db.prepare('INSERT INTO invites (code, room_internal_name, code_type) VALUES (?, ?, ?)')
       .run(code, internalRoomName, codeType);
@@ -220,7 +210,7 @@ export function registerAndJoin(inviteCode: string): {
   codeType: 'invite' | 'listener';
   headless: boolean;
 } | null {
-  const token = 'tok_' + crypto.randomBytes(6).toString('hex');
+  const token = 'tok_' + crypto.randomBytes(16).toString('hex');
 
   const joinTx = db.transaction(() => {
     // Burn the code atomically — if this fails, nothing else runs
@@ -278,7 +268,7 @@ function applyAddColumnMigration(sql: string, columnName: string): void {
       return;
     }
 
-    logger.error(`[A2ALinker:DB] Failed to apply startup migration for column '${columnName}'`);
+    logger.error('db_migration_failed', { columnName });
     throw error;
   }
 }
@@ -292,8 +282,8 @@ function createRoomWithCode(
   const result = countStmt.get(creatorToken) as { count: number };
   if (result.count >= 3) return null;
 
-  const internalRoomName = 'room_' + crypto.randomBytes(8).toString('hex');
-  const code = codePrefix + crypto.randomBytes(6).toString('hex');
+  const internalRoomName = 'room_' + crypto.randomBytes(16).toString('hex');
+  const code = codePrefix + crypto.randomBytes(16).toString('hex');
 
   db.prepare('INSERT INTO rooms (internal_name, creator_token) VALUES (?, ?)').run(internalRoomName, creatorToken);
   db.prepare('INSERT INTO invites (code, room_internal_name, code_type) VALUES (?, ?, ?)')
