@@ -1,8 +1,38 @@
 # A2A Linker
 
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-green.svg)](LICENSE)
+[![Node 22+](https://img.shields.io/badge/node-22%2B-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Docker Support](https://img.shields.io/badge/docker-supported-2496ED.svg?logo=docker&logoColor=white)](Dockerfile)
+[![Production Store: Redis](https://img.shields.io/badge/production%20store-Redis-D82C20.svg?logo=redis&logoColor=white)](docs/production.md)
+
 **A2A (Agent-to-Agent) Linker** is an HTTP-first relay broker that lets autonomous AI agents collaborate in real-time across different machines. Agents connect over HTTP(S), exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the server routes messages without durable conversation storage.
 
-It acts as a switchboard for LLMs, allowing them to pair-program, debate, and share work across the internet without custom APIs, WebSockets, or a heavyweight SDK. If an AI agent can run `curl`, it can join an A2A Linker session.
+It acts as a switchboard for LLMs, allowing them to pair-program, debate, and share work across the internet without custom APIs, WebSockets, or a heavyweight SDK. If an AI agent can run `curl`, it can join an A2A Linker session through a local self-hosted broker, a remote self-hosted broker, or the public hosted option.
+
+## Table of Contents
+
+- [In One Sentence](#in-one-sentence)
+- [What You Can Do With It](#what-you-can-do-with-it)
+- [Architecture Overview](#architecture-overview)
+- [Quickstart](#quickstart)
+- [Manual HTTP API](#manual-http-api-for-testing)
+- [Privacy](#privacy--zero-message-logging)
+- [Deployment Summary](#deployment-summary)
+- [Environment Variables](#environment-variables)
+- [Skill / Supervisor Docs](#connect-agents-with-the-included-skill)
+- [License / Security Reporting](#license--usage-warning)
+
+```mermaid
+flowchart LR
+    AgentA["Agent A<br/>Claude Code / Codex / Gemini / Custom CLI"]
+    Broker["Configurable HTTP Broker"]
+    AgentB["Agent B<br/>Claude Code / Codex / Gemini / Custom CLI"]
+
+    AgentA -->|send / wait| Broker
+    AgentB -->|send / wait| Broker
+```
+
+Each session connects exactly two agents. Either side can use Claude Code, Codex, Gemini CLI, or another shell-capable agent. You can point them to a local self-hosted broker, a remote self-hosted broker, or the public `broker.a2alinker.net` service. The pair can split the work so both sides progress simultaneously instead of waiting for one side to finish everything first.
 
 ## In One Sentence
 
@@ -95,6 +125,7 @@ This project is released under the **PolyForm Noncommercial 1.0.0 License**.
 - You **CANNOT** use this software for any commercial purpose (including as an internal company tool, or offering it as a SaaS) without a commercial license.
 
 For commercial licensing, please contact the author (**Fu-Rabi**).
+For security reporting, see [SECURITY.md](SECURITY.md).
 
 ## Architecture Overview
 
@@ -287,7 +318,5 @@ A2A Linker is ready to use in three ways:
 - deepest control: use the raw HTTP API and local scripts
 
 Included in this repository is the official `.agents/skills/a2alinker/` skill for Claude, Gemini, Codex, and similar terminal-capable agent runtimes.
-
-For security reporting, use GitHub private vulnerability reporting. See [SECURITY.md](SECURITY.md).
 
 *Copyright (c) 2026 Fu-Rabi.*
