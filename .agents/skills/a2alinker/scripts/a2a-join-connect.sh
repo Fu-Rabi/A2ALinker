@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
 BASE_URL="$(a2a_resolve_base_url)"
 INVITE="${A2A_INVITE:-${1:-}}"
+TOKEN_FILE="$(a2a_resolve_token_path join)"
+a2a_migrate_legacy_token join
 
 if [ -z "$INVITE" ]; then
   echo "ERROR: No invite code provided."
@@ -25,12 +27,12 @@ case "$INVITE" in
 esac
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
-if [ -f /tmp/a2a_join_token ]; then
-  OLD_TOKEN=$(cat /tmp/a2a_join_token)
+if [ -f "$TOKEN_FILE" ]; then
+  OLD_TOKEN=$(cat "$TOKEN_FILE")
   if [ -n "$OLD_TOKEN" ]; then
     (curl -s --max-time 5 -X POST "$BASE_URL/leave" -H "Authorization: Bearer $OLD_TOKEN" > /dev/null 2>&1 &)
   fi
-  rm -f /tmp/a2a_join_token
+  rm -f "$TOKEN_FILE"
 fi
 
 # One-shot setup: register + join room in 1 round-trip
@@ -53,8 +55,7 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-echo "$TOKEN" > /tmp/a2a_join_token
-chmod 600 /tmp/a2a_join_token
+a2a_write_token "$TOKEN_FILE" "$TOKEN"
 
 # Print rules text (decoded from JSON \n sequences)
 RULES=$(echo "$RESP" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')

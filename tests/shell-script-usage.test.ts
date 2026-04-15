@@ -13,6 +13,12 @@ function copyFile(sourcePath: string, destinationPath: string): void {
     fs.copyFileSync(sourcePath, destinationPath);
 }
 
+function createStateDir(root: string): string {
+    const stateDir = path.join(root, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    return stateDir;
+}
+
 describe('A2A shell script usage guards', () => {
     it('forwards unattended listener intent to the supervisor as --headless true', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-headless-'));
@@ -381,6 +387,7 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
     it('tells the host to send the first message after redeeming a listener code', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-usage-'));
         const binDir = path.join(root, 'bin');
+        const stateDir = createStateDir(root);
         fs.mkdirSync(binDir, { recursive: true });
 
         writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
@@ -396,6 +403,7 @@ printf '%s' '{"token":"tok_abcdef123456","roomName":"room_demo","role":"host","h
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -410,7 +418,8 @@ printf '%s' '{"token":"tok_abcdef123456","roomName":"room_demo","role":"host","h
     it('accepts listen as an alias for the listener-side join token when closing', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-leave-listen-'));
         const binDir = path.join(root, 'bin');
-        const tokenPath = '/tmp/a2a_join_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_join_token');
         fs.mkdirSync(binDir, { recursive: true });
         fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
 
@@ -428,6 +437,7 @@ printf '%s' '{"ok":true}'
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
                     A2A_ALLOW_CLOSE: 'true',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -440,9 +450,10 @@ printf '%s' '{"ok":true}'
         fs.rmSync(root, { recursive: true, force: true });
     });
 
-    it('uses the host session backup token when /tmp/a2a_host_token is missing during close', () => {
+    it('uses the host session backup token when the active host token is missing during close', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-leave-host-backup-'));
         const binDir = path.join(root, 'bin');
+        const stateDir = createStateDir(root);
         const sessionDir = path.join(root, 'session');
         const backupTokenPath = path.join(sessionDir, 'a2a_host_token');
         const curlArgsPath = path.join(root, 'curl-args');
@@ -477,6 +488,7 @@ printf '%s' '{"ok":true}'
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_ALLOW_CLOSE: 'true',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -493,7 +505,8 @@ printf '%s' '{"ok":true}'
     it('resolves the broker from the host session artifact when send.sh runs without broker env', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-artifact-'));
         const binDir = path.join(root, 'bin');
-        const tokenPath = '/tmp/a2a_host_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_host_token');
         const curlArgsPath = path.join(root, 'curl-args');
         fs.mkdirSync(binDir, { recursive: true });
         fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
@@ -524,6 +537,7 @@ printf 'DELIVERED\n200'
                 env: {
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -534,13 +548,13 @@ printf 'DELIVERED\n200'
         expect(fs.readFileSync(curlArgsPath, 'utf8')).toContain('https://broker.a2alinker.net/send');
 
         fs.rmSync(root, { recursive: true, force: true });
-        fs.rmSync(tokenPath, { force: true });
     });
 
     it('defaults a2a-send.sh to the host role when only a message is provided', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-default-host-'));
         const binDir = path.join(root, 'bin');
-        const tokenPath = '/tmp/a2a_host_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_host_token');
         const curlArgsPath = path.join(root, 'curl-args');
         fs.mkdirSync(binDir, { recursive: true });
         fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
@@ -559,6 +573,7 @@ printf 'DELIVERED\n200'
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -569,13 +584,13 @@ printf 'DELIVERED\n200'
         expect(fs.readFileSync(curlArgsPath, 'utf8')).toContain('https://broker.a2alinker.net/send');
 
         fs.rmSync(root, { recursive: true, force: true });
-        fs.rmSync(tokenPath, { force: true });
     });
 
     it('sends successfully from a host session artifact when the caller omits both role and broker env', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-trace-shape-'));
         const binDir = path.join(root, 'bin');
-        const tokenPath = '/tmp/a2a_host_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_host_token');
         const curlArgsPath = path.join(root, 'curl-args');
         fs.mkdirSync(binDir, { recursive: true });
         fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
@@ -606,6 +621,7 @@ printf 'DELIVERED\n200'
                 env: {
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -616,13 +632,13 @@ printf 'DELIVERED\n200'
         expect(fs.readFileSync(curlArgsPath, 'utf8')).toContain('https://broker.a2alinker.net/send');
 
         fs.rmSync(root, { recursive: true, force: true });
-        fs.rmSync(tokenPath, { force: true });
     });
 
     it('preserves the existing host token if a listener reconnect attempt fails', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-token-guard-'));
         const binDir = path.join(root, 'bin');
-        const tokenPath = '/tmp/a2a_host_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_host_token');
         fs.mkdirSync(binDir, { recursive: true });
         fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
 
@@ -639,6 +655,7 @@ printf '%s' '{"error":"Invite code invalid or already used"}'
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -648,9 +665,6 @@ printf '%s' '{"error":"Invite code invalid or already used"}'
         expect(result.stdout).toContain('ERROR: Invite code invalid or already used');
         expect(fs.readFileSync(tokenPath, 'utf8')).toBe('tok_existing123');
 
-        if (fs.existsSync(tokenPath)) {
-            fs.unlinkSync(tokenPath);
-        }
         fs.rmSync(root, { recursive: true, force: true });
     });
 
@@ -658,7 +672,8 @@ printf '%s' '{"error":"Invite code invalid or already used"}'
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-stdin-'));
         const binDir = path.join(root, 'bin');
         const capturePath = path.join(root, 'captured-message');
-        const tokenPath = '/tmp/a2a_host_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_host_token');
         fs.mkdirSync(binDir, { recursive: true });
         fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
 
@@ -691,6 +706,7 @@ printf 'TIMEOUT_ROOM_CLOSED\\n200'
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    A2A_STATE_DIR: stateDir,
                 },
                 input: '<!DOCTYPE html>\n<script>const x = `hi`;</script>\n[OVER]\n',
                 encoding: 'utf8',
@@ -702,13 +718,13 @@ printf 'TIMEOUT_ROOM_CLOSED\\n200'
         expect(fs.readFileSync(capturePath, 'utf8')).toContain('<!DOCTYPE html>');
         expect(fs.readFileSync(capturePath, 'utf8')).toContain('const x = `hi`;');
 
-        fs.unlinkSync(tokenPath);
         fs.rmSync(root, { recursive: true, force: true });
     });
 
     it('tells the listener side to keep a waiter active if it wants to observe close events', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-listen-usage-'));
         const binDir = path.join(root, 'bin');
+        const stateDir = createStateDir(root);
         fs.mkdirSync(binDir, { recursive: true });
 
         writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
@@ -724,6 +740,7 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -740,6 +757,7 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
     it('reports the broker endpoint and curl exit code when listener setup cannot reach the relay', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-listen-error-'));
         const binDir = path.join(root, 'bin');
+        const stateDir = createStateDir(root);
         fs.mkdirSync(binDir, { recursive: true });
 
         writeExecutable(path.join(binDir, 'curl'), '#!/bin/bash\nexit 6\n');
@@ -753,6 +771,7 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -766,7 +785,8 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
 
     it('refuses to leave an active session without explicit close authorization', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-leave-usage-'));
-        const tokenPath = '/tmp/a2a_host_token';
+        const stateDir = createStateDir(root);
+        const tokenPath = path.join(stateDir, 'a2a_host_token');
         fs.writeFileSync(tokenPath, 'tok_demo123', 'utf8');
 
         const result = spawnSync(
@@ -777,6 +797,7 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
                 env: {
                     ...process.env,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    A2A_STATE_DIR: stateDir,
                 },
                 encoding: 'utf8',
             },
@@ -787,7 +808,6 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
         expect(result.stdout).toContain('A2A_ALLOW_CLOSE=true');
         expect(fs.readFileSync(tokenPath, 'utf8')).toBe('tok_demo123');
 
-        fs.unlinkSync(tokenPath);
         fs.rmSync(root, { recursive: true, force: true });
     });
 });

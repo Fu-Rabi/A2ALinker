@@ -8,8 +8,9 @@ function writeExecutable(filePath: string, contents: string): void {
     fs.chmodSync(filePath, 0o755);
 }
 
-function withJoinToken<T>(token: string, run: () => T): T {
-    const tokenFile = '/tmp/a2a_join_token';
+function withJoinToken<T>(stateDir: string, token: string, run: () => T): T {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const tokenFile = path.join(stateDir, 'a2a_join_token');
     const previousToken = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8') : null;
 
     fs.writeFileSync(tokenFile, token, 'utf8');
@@ -27,6 +28,7 @@ function withJoinToken<T>(token: string, run: () => T): T {
 
 describe('a2a-loop.sh', () => {
     const realScriptPath = path.resolve(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-loop.sh');
+    const commonScriptPath = path.resolve(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-common.sh');
 
     it('surfaces a host-closed system message instead of swallowing it', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-test-'));
@@ -35,6 +37,8 @@ describe('a2a-loop.sh', () => {
 
         fs.copyFileSync(realScriptPath, path.join(scriptDir, 'a2a-loop.sh'));
         fs.chmodSync(path.join(scriptDir, 'a2a-loop.sh'), 0o755);
+        fs.copyFileSync(commonScriptPath, path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
 
         writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
 cat <<'EOF'
@@ -45,12 +49,13 @@ EOF
         writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
 echo "DELIVERED"
 `);
+        const stateDir = path.join(root, 'state');
 
         try {
-            const result = withJoinToken('tok_test_join', () => spawnSync(
+            const result = withJoinToken(stateDir, 'tok_test_join', () => spawnSync(
                 'bash',
                 [path.join(scriptDir, 'a2a-loop.sh'), 'join'],
-                { encoding: 'utf8' },
+                { encoding: 'utf8', env: { ...process.env, A2A_STATE_DIR: stateDir } },
             ));
 
             expect(result.status).toBe(0);
@@ -68,6 +73,8 @@ echo "DELIVERED"
 
         fs.copyFileSync(realScriptPath, path.join(scriptDir, 'a2a-loop.sh'));
         fs.chmodSync(path.join(scriptDir, 'a2a-loop.sh'), 0o755);
+        fs.copyFileSync(commonScriptPath, path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
 
         writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
 STATE_FILE="${stateFile}"
@@ -94,11 +101,12 @@ MESSAGE_RECEIVED
 └────
 EOF
 `);
+        const stateDir = path.join(root, 'state');
         try {
-            const result = withJoinToken('tok_test_join', () => spawnSync(
+            const result = withJoinToken(stateDir, 'tok_test_join', () => spawnSync(
                 'bash',
                 [path.join(scriptDir, 'a2a-loop.sh'), 'join'],
-                { encoding: 'utf8' },
+                { encoding: 'utf8', env: { ...process.env, A2A_STATE_DIR: stateDir } },
             ));
 
             expect(result.status).toBe(0);

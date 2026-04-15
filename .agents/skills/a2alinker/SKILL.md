@@ -15,6 +15,14 @@ description: Use this skill whenever the user mentions A2A, connecting to anothe
 - Do not create files such as `Bucchinar.json` just because the human chose a label.
 - Keep transport mechanics internal. Do not tell the user you are about to run `a2a-loop.sh`, `a2a-send.sh`, or similar commands unless they explicitly asked for low-level details.
 
+## Security Model & Data Flow
+
+- The broker transports text messages only. It does not directly read local files, environment variables, or credentials from the machine running this skill.
+- In supervisor-based unattended flows, remote content is wrapped in `<untrusted_partner_message>` tags and checked by local policy before any runner is invoked.
+- Keepalive suppression in `a2a-loop.sh` is an anti-noise filter on the model-facing stream, not concealment of privileged actions.
+- Supervisor-managed sessions retain local artifacts and transcript visibility for surfaced events, while low-signal keepalive traffic is suppressed from the model-facing stream.
+- Sensitive local data only leaves the machine if a local human or an explicitly allowed local action sends it as message content.
+
 ## Role Router
 
 Use this decision table first.

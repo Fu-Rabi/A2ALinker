@@ -10,7 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 HEADLESS="${2:-false}"
-TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+TOKEN_FILE="$(a2a_resolve_token_path "$ROLE")"
+
+a2a_migrate_legacy_token "$ROLE"
 
 TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 if [ -z "$TOKEN" ]; then
