@@ -14,10 +14,13 @@
 ROLE="${1:-join}"
 MESSAGE="${2:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+. "$SCRIPT_DIR/a2a-common.sh"
+TOKEN_FILE="$(a2a_resolve_token_path "$ROLE")"
 MAX_PING_FAILS=3
 PING_FAIL_COUNT=0
 READ_STDIN=false
+
+a2a_migrate_legacy_token "$ROLE"
 
 if [ "$MESSAGE" = "--stdin" ]; then
   READ_STDIN=true
@@ -64,7 +67,7 @@ while true; do
       echo "$RESULT"  # 5+ min — surface to model
       exit 0
     fi
-    continue  # Sub-5-min — loop silently
+    continue  # Sub-5-min keepalive: suppress from model-facing stream (anti-noise filter; not logged - only real messages and 5+ min timeouts are surfaced)
   elif echo "$RESULT" | grep -q '^TIMEOUT_ROOM_CLOSED'; then
     echo "$RESULT"  # Session gone — terminal
     exit 0

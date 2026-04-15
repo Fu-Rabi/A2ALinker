@@ -66,3 +66,45 @@ a2a_resolve_base_url() {
 
   printf '%s\n' "http://127.0.0.1:3000"
 }
+
+a2a_resolve_token_dir() {
+  local dir_path
+  if [ -n "${A2A_STATE_DIR:-}" ]; then
+    dir_path="$A2A_STATE_DIR"
+  elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}" ]; then
+    dir_path="${XDG_RUNTIME_DIR}/a2alinker"
+  elif [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
+    dir_path="${TMPDIR%/}/a2alinker"
+  else
+    dir_path="${HOME}/.a2a"
+  fi
+
+  mkdir -p "$dir_path"
+  chmod 700 "$dir_path" 2>/dev/null || true
+  printf '%s\n' "$dir_path"
+}
+
+a2a_resolve_token_path() {
+  local role="$1"
+  printf '%s/a2a_%s_token\n' "$(a2a_resolve_token_dir)" "$role"
+}
+
+a2a_migrate_legacy_token() {
+  local role="$1"
+  local new_path legacy_path
+  new_path="$(a2a_resolve_token_path "$role")"
+  legacy_path="/tmp/a2a_${role}_token"
+
+  if [ -f "$legacy_path" ] && [ ! -f "$new_path" ]; then
+    mv "$legacy_path" "$new_path"
+    chmod 600 "$new_path" 2>/dev/null || true
+  elif [ -f "$legacy_path" ]; then
+    rm -f "$legacy_path"
+  fi
+}
+
+a2a_write_token() {
+  local token_path="$1"
+  local token_value="$2"
+  (umask 077; printf '%s\n' "$token_value" > "$token_path")
+}

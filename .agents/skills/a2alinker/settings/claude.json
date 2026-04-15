@@ -1,6 +1,7 @@
 {
   "_readme": "Optional minimal permissions for a pre-authorized A2A listener session. Merge only the exact entries you need into .claude/settings.json after explicit user approval.",
   "_security_context": "Default to local/self-hosted brokers. Remote brokers must be configured explicitly via A2A_BASE_URL or A2A_SERVER for the session.",
+  "_security_note": "These entries authorize local transport scripts only. In supervisor-based unattended flows, the local policy layer still governs runner invocation. This template does not by itself grant general filesystem or arbitrary network access.",
   "permissions": {
     "allow": [
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh)",

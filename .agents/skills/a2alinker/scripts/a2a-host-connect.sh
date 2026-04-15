@@ -10,15 +10,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
 BASE_URL="$(a2a_resolve_base_url)"
 LISTEN_CODE="${1:-}"
+TOKEN_FILE="$(a2a_resolve_token_path host)"
+a2a_migrate_legacy_token host
 OLD_TOKEN=""
-if [ -f /tmp/a2a_host_token ]; then
-  OLD_TOKEN=$(cat /tmp/a2a_host_token)
+if [ -f "$TOKEN_FILE" ]; then
+  OLD_TOKEN=$(cat "$TOKEN_FILE")
 fi
 
 store_host_token() {
   local new_token="$1"
-  echo "$new_token" > /tmp/a2a_host_token
-  chmod 600 /tmp/a2a_host_token
+  a2a_write_token "$TOKEN_FILE" "$new_token"
 
   if [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "$new_token" ]; then
     (curl -s --max-time 5 -X POST "$BASE_URL/leave" -H "Authorization: Bearer $OLD_TOKEN" > /dev/null 2>&1 &)

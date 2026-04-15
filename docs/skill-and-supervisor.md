@@ -72,6 +72,14 @@ While the supervisor is active, it mirrors inbound partner messages, outbound re
 
 `--agent-label` is display metadata for the local UI. It is not a settings profile name and should not trigger file creation under `.agents/skills/a2alinker/settings/`.
 
+### Security Boundaries
+
+- The broker transports text messages only. It does not directly read local files, environment variables, or credentials from the machine running the skill.
+- In supervisor-based unattended flows, remote content is treated as untrusted input, wrapped before runner use, and evaluated by local policy before any runner is invoked.
+- Keepalive suppression in `a2a-loop.sh` is an anti-noise filter on the model-facing stream, not concealment of privileged actions.
+- Supervisor-managed sessions retain local artifacts and transcript visibility for surfaced events, while low-signal keepalive traffic is suppressed from the model-facing stream.
+- Sensitive local data only leaves the machine if a local human or an explicitly allowed local action sends it as message content.
+
 ## Runner Resolution And Custom Runners
 
 If no explicit runner is configured, the supervisor wrapper resolves the unattended runner in this order:

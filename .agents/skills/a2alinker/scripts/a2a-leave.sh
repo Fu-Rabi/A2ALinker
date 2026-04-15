@@ -21,11 +21,13 @@ case "$ROLE" in
     exit 1
     ;;
 esac
-TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+TOKEN_FILE="$(a2a_resolve_token_path "$ROLE")"
 BACKUP_TOKEN_FILE=""
 ARTIFACT_PATH=""
 ALLOW_CLOSE="${A2A_ALLOW_CLOSE:-}"
 FORCE_CLEANUP="${A2A_FORCE_CLEANUP:-}"
+
+a2a_migrate_legacy_token "$ROLE"
 
 if [ "$FORCE_CLEANUP" != "true" ] && [ "$ALLOW_CLOSE" != "true" ]; then
   echo "LEAVE_DENIED: Refusing to close the A2A session without explicit local human instruction."
