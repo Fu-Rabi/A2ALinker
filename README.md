@@ -31,6 +31,65 @@ You do not need to understand Redis, SSH, or the internal protocol to try it. Th
 - self-host locally with Docker Compose
 - use the included skill scripts from `.agents/skills/a2alinker/`
 
+## Quickstart
+
+Choose the path that matches how you want to try the project:
+
+### Option 1: Use The Hosted Broker
+
+Best if you want to try A2A Linker quickly without running infrastructure.
+
+1. Point your local scripts or skill at `https://broker.a2alinker.net`
+2. Start a host session on one machine
+3. Join with the invite code from another machine
+
+### Option 2: Self-Host With Docker Compose
+
+Best if you want your own private broker with the recommended production-style topology.
+
+1. Copy the example environment:
+   ```bash
+   cp deploy/a2alinker.env.example .env
+   ```
+2. Edit `.env` and set at least:
+   - `LOOKUP_HMAC_KEY`
+   - `ADMIN_TOKEN` if you want admin endpoints
+3. Start the broker and Redis:
+   ```bash
+   docker compose up -d
+   ```
+4. Check that it is live:
+   ```bash
+   curl http://127.0.0.1:3000/health
+   curl http://127.0.0.1:3000/ready
+   ```
+
+### Option 3: Run It Locally Without Docker
+
+Best if you are developing or testing the broker directly.
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+2. Build:
+   ```bash
+   npm run build
+   ```
+3. Start Redis locally
+4. Start the broker:
+   ```bash
+   NODE_ENV=production \
+   BROKER_STORE=redis \
+   REDIS_URL=redis://127.0.0.1:6379/0 \
+   LOOKUP_HMAC_KEY=replace-with-at-least-32-random-bytes \
+   TRUST_PROXY=1 \
+   HTTP_BIND_HOST=127.0.0.1 \
+   HTTP_PORT=3000 \
+   ENABLE_SSH=false \
+   npm start
+   ```
+
 ## Why Does This Exist?
 
 As terminal-native AI agents become more powerful, they are often isolated to the machine they are running on. A2A Linker gives them a simple shared transport.
@@ -108,6 +167,45 @@ A2A Linker relies on five core pillars:
 
 > **Transport note:** The HTTP production path is the supported production model. The SSH broker remains in the repo as an optional legacy/demo transport. Public deployments should prefer HTTP behind a reverse proxy and leave `ENABLE_SSH=false`.
 
+## Deployment Summary
+
+Supported production shapes:
+
+- run the app privately on `127.0.0.1:3000`
+- terminate TLS at nginx or another reverse proxy
+- use `BROKER_STORE=redis`
+- set `TRUST_PROXY=1`
+- leave `ENABLE_SSH=false`
+- deploy either with `systemd` or with `docker compose`
+
+Direct in-process HTTPS is not the recommended production default. In production it requires `ALLOW_DIRECT_HTTPS_PROD=true`.
+
+For deeper operator guidance, see [production.md](docs/production.md).
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `NODE_ENV` | Runtime mode. Production requires stricter startup validation. | `development` |
+| `BROKER_STORE` | `memory` for local/test, `redis` for production shared state. | `memory` in dev, `redis` in production |
+| `REDIS_URL` | Redis connection URL. Required when `BROKER_STORE=redis`. | unset |
+| `LOOKUP_HMAC_KEY` | HMAC key used to derive anonymous lookup IDs. Must be at least 32 bytes in production. | random in non-production |
+| `TRUST_PROXY` | Reverse-proxy trust setting for Express. Required in production. | `false` |
+| `HTTP_BIND_HOST` | Bind host for the HTTP app listener. | `0.0.0.0` in dev, `127.0.0.1` in production |
+| `HTTP_PORT` | HTTP app listener port. | `3000` |
+| `PUBLIC_HOST` | Hostname used in SSH banners and host key generation. | `localhost` |
+| `PORT` | Local listen port for the SSH broker. | `2222` |
+| `ENABLE_SSH` | Enables the legacy SSH broker. Public HTTP deployments should leave this disabled. | `false` |
+| `ADMIN_TOKEN` | Enables authenticated admin endpoints when set. | unset |
+| `HTTPS_KEY_PATH` | Optional direct TLS private key path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
+| `HTTPS_CERT_PATH` | Optional direct TLS certificate chain path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
+| `ALLOW_DIRECT_HTTPS_PROD` | Explicit override for direct in-process TLS in production. | `false` |
+| `ALLOW_INSECURE_HTTP_LOCAL_DEV` | Allows plain HTTP startup when certs are missing in local development. | `false` |
+
+Client scripts default to local/self-hosted transport (`A2A_BASE_URL=http://127.0.0.1:3000`). Remote brokers must be configured explicitly with `A2A_BASE_URL` or `A2A_SERVER`.
+
+For production deployment assets and the operator runbook, see [production.md](docs/production.md), [nginx.a2alinker.conf](deploy/nginx.a2alinker.conf), [a2alinker.env.example](deploy/a2alinker.env.example), [Dockerfile](Dockerfile), and [docker-compose.yml](docker-compose.yml).
+
 ## Connect Agents With The Included Skill
 
 The easiest way to use A2A Linker is the included agent skill under `.agents/skills/a2alinker/`. It lets your local AI assistant handle the transport scripts safely instead of making you compose raw HTTP commands by hand.
@@ -179,104 +277,6 @@ curl -s -X POST http://127.0.0.1:3000/room-rule/headless \
 ```
 
 The SSH broker on port `2222` remains available only for direct terminal access and developer testing. It is not the recommended public production path.
-
-## Quickstart
-
-Choose the path that matches how you want to try the project:
-
-### Option 1: Use The Hosted Broker
-
-Best if you want to try A2A Linker quickly without running infrastructure.
-
-1. Point your local scripts or skill at `https://broker.a2alinker.net`
-2. Start a host session on one machine
-3. Join with the invite code from another machine
-
-### Option 2: Self-Host With Docker Compose
-
-Best if you want your own private broker with the recommended production-style topology.
-
-1. Copy the example environment:
-   ```bash
-   cp deploy/a2alinker.env.example .env
-   ```
-2. Edit `.env` and set at least:
-   - `LOOKUP_HMAC_KEY`
-   - `ADMIN_TOKEN` if you want admin endpoints
-3. Start the broker and Redis:
-   ```bash
-   docker compose up -d
-   ```
-4. Check that it is live:
-   ```bash
-   curl http://127.0.0.1:3000/health
-   curl http://127.0.0.1:3000/ready
-   ```
-
-### Option 3: Run It Locally Without Docker
-
-Best if you are developing or testing the broker directly.
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Build:
-   ```bash
-   npm run build
-   ```
-3. Start Redis locally
-4. Start the broker:
-   ```bash
-   NODE_ENV=production \
-   BROKER_STORE=redis \
-   REDIS_URL=redis://127.0.0.1:6379/0 \
-   LOOKUP_HMAC_KEY=replace-with-at-least-32-random-bytes \
-   TRUST_PROXY=1 \
-   HTTP_BIND_HOST=127.0.0.1 \
-   HTTP_PORT=3000 \
-   ENABLE_SSH=false \
-   npm start
-   ```
-
-## Deployment Summary
-
-Supported production shapes:
-
-- run the app privately on `127.0.0.1:3000`
-- terminate TLS at nginx or another reverse proxy
-- use `BROKER_STORE=redis`
-- set `TRUST_PROXY=1`
-- leave `ENABLE_SSH=false`
-- deploy either with `systemd` or with `docker compose`
-
-Direct in-process HTTPS is not the recommended production default. In production it requires `ALLOW_DIRECT_HTTPS_PROD=true`.
-
-For deeper operator guidance, see [production.md](docs/production.md).
-
-## Environment Variables
-
-| Variable | Description | Default |
-|---|---|---|
-| `NODE_ENV` | Runtime mode. Production requires stricter startup validation. | `development` |
-| `BROKER_STORE` | `memory` for local/test, `redis` for production shared state. | `memory` in dev, `redis` in production |
-| `REDIS_URL` | Redis connection URL. Required when `BROKER_STORE=redis`. | unset |
-| `LOOKUP_HMAC_KEY` | HMAC key used to derive anonymous lookup IDs. Must be at least 32 bytes in production. | random in non-production |
-| `TRUST_PROXY` | Reverse-proxy trust setting for Express. Required in production. | `false` |
-| `HTTP_BIND_HOST` | Bind host for the HTTP app listener. | `0.0.0.0` in dev, `127.0.0.1` in production |
-| `HTTP_PORT` | HTTP app listener port. | `3000` |
-| `PUBLIC_HOST` | Hostname used in SSH banners and host key generation. | `localhost` |
-| `PORT` | Local listen port for the SSH broker. | `2222` |
-| `ENABLE_SSH` | Enables the legacy SSH broker. Public HTTP deployments should leave this disabled. | `false` |
-| `ADMIN_TOKEN` | Enables authenticated admin endpoints when set. | unset |
-| `HTTPS_KEY_PATH` | Optional direct TLS private key path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
-| `HTTPS_CERT_PATH` | Optional direct TLS certificate chain path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
-| `ALLOW_DIRECT_HTTPS_PROD` | Explicit override for direct in-process TLS in production. | `false` |
-| `ALLOW_INSECURE_HTTP_LOCAL_DEV` | Allows plain HTTP startup when certs are missing in local development. | `false` |
-
-Client scripts default to local/self-hosted transport (`A2A_BASE_URL=http://127.0.0.1:3000`). Remote brokers must be configured explicitly with `A2A_BASE_URL` or `A2A_SERVER`.
-
-For production deployment assets and the operator runbook, see [production.md](docs/production.md), [nginx.a2alinker.conf](deploy/nginx.a2alinker.conf), [a2alinker.env.example](deploy/a2alinker.env.example), [Dockerfile](Dockerfile), and [docker-compose.yml](docker-compose.yml).
 
 ## Summary
 
