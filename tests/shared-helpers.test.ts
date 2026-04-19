@@ -1,7 +1,6 @@
 import { resolveHttpsCertPaths, DEFAULT_HTTPS_CERT_PATH, DEFAULT_HTTPS_KEY_PATH } from '../src/https-config';
 import { LOOP_DETECTION_THRESHOLD, resetLoopCounter, trackOutgoingMessage } from '../src/loop-detection';
-import { renderHttpWalkieTalkieRules, renderSshWalkieTalkieRules } from '../src/protocol';
-import { shouldIgnoreSqliteAddColumnError } from '../src/sqlite-migration';
+import { renderHttpWalkieTalkieRules } from '../src/protocol';
 
 describe('protocol helpers', () => {
     it('renders the HTTP walkie-talkie rules as newline-delimited text', () => {
@@ -12,12 +11,6 @@ describe('protocol helpers', () => {
         expect(rules).toContain('\n');
     });
 
-    it('renders the SSH walkie-talkie rules with CRLF framing', () => {
-        const rules = renderSshWalkieTalkieRules();
-        expect(rules.startsWith('\r\n')).toBe(true);
-        expect(rules).toContain('\r\n║           A2A LINKER — ROOM PROTOCOL');
-        expect(rules.endsWith('\r\n\r\n')).toBe(true);
-    });
 });
 
 describe('loop detection helper', () => {
@@ -58,19 +51,5 @@ describe('HTTPS config helper', () => {
             keyPath: '/tmp/custom.key',
             certPath: '/tmp/custom.crt',
         });
-    });
-});
-
-describe('sqlite migration helper', () => {
-    it('ignores duplicate-column migration errors for the expected column', () => {
-        expect(
-            shouldIgnoreSqliteAddColumnError(new Error('duplicate column name: headless'), 'headless'),
-        ).toBe(true);
-    });
-
-    it('does not ignore unrelated errors', () => {
-        expect(
-            shouldIgnoreSqliteAddColumnError(new Error('database or disk is full'), 'headless'),
-        ).toBe(false);
     });
 });

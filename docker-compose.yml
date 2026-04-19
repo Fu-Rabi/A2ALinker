@@ -13,7 +13,6 @@ services:
       # Inside a container the app must bind all interfaces; host exposure stays loopback-only below.
       HTTP_BIND_HOST: 0.0.0.0
       HTTP_PORT: "3000"
-      ENABLE_SSH: "false"
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

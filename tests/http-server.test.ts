@@ -1,10 +1,6 @@
 /**
  * Integration tests for the HTTP server endpoints.
- * Uses an in-memory SQLite DB so no files are created on disk.
  */
-
-// Must be set before importing db (via http-server)
-process.env['DB_PATH'] = ':memory:';
 
 import request from 'supertest';
 import { app } from '../src/http-server';

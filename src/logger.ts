@@ -32,9 +32,6 @@ const ALLOWED_EVENTS = new Set([
   'session_created',
   'session_expired',
   'session_joined',
-  'ssh_client_error',
-  'ssh_disabled',
-  'ssh_server_started',
   'token_registered',
   'wait_rejected',
 ]);

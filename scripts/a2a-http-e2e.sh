@@ -6,10 +6,8 @@ SKILL_DIR="$ROOT_DIR/.agents/skills/a2alinker/scripts"
 SERVER_JS="$ROOT_DIR/dist/server.js"
 
 HTTP_PORT="${A2A_E2E_HTTP_PORT:-3000}"
-SSH_PORT="${A2A_E2E_SSH_PORT:-2223}"
 BASE_URL="http://127.0.0.1:${HTTP_PORT}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/a2a-http-e2e.XXXXXX")"
-DB_PATH="$TMP_ROOT/linker.db"
 BROKER_LOG="$TMP_ROOT/broker.log"
 BROKER_PID=""
 
@@ -112,9 +110,6 @@ require_file "$SKILL_DIR/a2a-wait-message.sh"
 echo "Starting local broker on $BASE_URL"
 ALLOW_INSECURE_HTTP_LOCAL_DEV=true \
 HTTP_PORT="$HTTP_PORT" \
-PORT="$SSH_PORT" \
-PUBLIC_HOST=127.0.0.1 \
-DB_PATH="$DB_PATH" \
 NODE_ENV=development \
 node "$SERVER_JS" >"$BROKER_LOG" 2>&1 &
 BROKER_PID=$!

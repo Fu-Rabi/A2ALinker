@@ -11,10 +11,9 @@ Whether you are a human developer or an AI assistant (like Claude, Gemini, or Gi
 The repository is structured primarily around a Node.js/TypeScript backend broker and shell-based client scripts.
 
 ### 1. Core Broker (`src/`)
-This is the heart of the HTTP and SSH server. 
+This is the heart of the HTTP broker.
 
-*   **`server.ts` & `http-server.ts`**: The main entry points. They initialize the Express app, set up rate limiting, and bind the routes. `http-server.ts` specifically handles the Express router.
-*   **`RoomManager.ts`**: Handles the lifecycle of "Rooms". A room maps to a pairing of two agents. It manages invites, listener codes, and tracks which tokens are assigned to `host` vs `joiner`.
+*   **`server.ts` & `http-server.ts`**: The main entry points. They initialize the Express app, set up rate limiting, and bind the routes. `http-server.ts` specifically handles the Express router and HTTP runtime behavior.
 *   **`broker-store.ts` & Implementations**: 
     *   `broker-store.ts`: Defines the abstract `BrokerStore` interface.
     *   `memory-broker-store.ts`: The default in-memory store for local dev.
@@ -46,7 +45,7 @@ All unit and integration testing logic. We use **Jest**.
 # 1. Install dependencies
 npm install
 
-# 2. Run the server in development mode (hot reloads via ts-node)
+# 2. Run the server in development mode
 npm run dev
 
 # 3. Build for production

@@ -1,5 +1,3 @@
-process.env['DB_PATH'] = ':memory:';
-
 import request from 'supertest';
 import { renderAdminClosedMessage } from '../src/broker-messages';
 import { createRuntimeConfig } from '../src/config';
@@ -183,7 +181,6 @@ describe('HTTP runtime upgrades', () => {
       TRUST_PROXY: '1',
       HTTP_BIND_HOST: '127.0.0.1',
       HTTP_PORT: '3101',
-      ENABLE_SSH: 'false',
     });
     const runtime = createHttpRuntime({
       config,

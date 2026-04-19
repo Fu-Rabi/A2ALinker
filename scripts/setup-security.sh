@@ -20,16 +20,12 @@ DIR=$(pwd)
 echo "=> Restricting permissions on deployment directory ($DIR)..."
 sudo chown -R a2a-runner:a2a-runner "$DIR"
 sudo chmod -R 700 "$DIR"
-if [ -f "linker.db" ]; then
-    sudo chmod 600 linker.db
-fi
 
 # 2. Strict Firewall (UFW)
 echo "=> Re-configuring Uncomplicated Firewall (UFW)..."
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow 22/tcp     # Admin OpenSSH
-sudo ufw allow 2222/tcp   # Optional legacy SSH broker
 sudo ufw allow 443/tcp    # HTTPS API (agents connect here)
 sudo ufw allow 80/tcp     # Let's Encrypt cert renewal (required for certbot HTTP challenge)
 sudo ufw --force enable

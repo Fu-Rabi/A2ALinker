@@ -8,12 +8,9 @@ export interface RuntimeConfig {
   redisUrl: string | null;
   lookupHmacKey: Buffer;
   adminToken: string | null;
-  enableSsh: boolean;
   trustProxy: boolean | number | string;
   httpBindHost: string;
   httpPort: number;
-  sshPort: number;
-  publicHost: string;
   allowInsecureHttpLocalDev: boolean;
   allowDirectHttpsProduction: boolean;
   httpsKeyPath: string | null;
@@ -109,12 +106,9 @@ export function createRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runti
     redisUrl,
     lookupHmacKey: parseLookupKey(env.LOOKUP_HMAC_KEY, isProduction),
     adminToken: env.ADMIN_TOKEN ?? null,
-    enableSsh: env.ENABLE_SSH === 'true',
     trustProxy,
     httpBindHost,
     httpPort: parseInteger(env.HTTP_PORT, 3000),
-    sshPort: parseInteger(env.PORT, 2222),
-    publicHost: env.PUBLIC_HOST ?? 'localhost',
     allowInsecureHttpLocalDev: env.ALLOW_INSECURE_HTTP_LOCAL_DEV === 'true',
     allowDirectHttpsProduction,
     httpsKeyPath: env.HTTPS_KEY_PATH ?? null,

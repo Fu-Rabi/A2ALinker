@@ -15,7 +15,6 @@ This repo now supports a privacy-preserving production shape centered on:
 3. Run Redis on a private interface or private network.
 4. Set `BROKER_STORE=redis`.
 5. Set `TRUST_PROXY=1`.
-6. Leave `ENABLE_SSH=false` unless you have a separate reason to expose the legacy SSH path.
 
 Supported production shapes:
 
@@ -34,7 +33,6 @@ Recommended:
 
 - `HTTP_BIND_HOST=127.0.0.1`
 - `HTTP_PORT=3000`
-- `ENABLE_SSH=false`
 - `ADMIN_TOKEN=...`
 
 ## Privacy contract
@@ -59,18 +57,6 @@ The broker may retain temporary anonymous runtime state required to deliver live
 - aggregate counters
 
 That state is TTL-bound and should live only in Redis for the lifetime of active or recently active sessions.
-
-## SSH status
-
-The SSH broker remains in the repo as a legacy/demo transport. It still uses the older SQLite-backed
-room-management path and is outside the production privacy/runtime guarantee.
-
-For public production deployments:
-
-- use the HTTP broker only
-- set `BROKER_STORE=redis`
-- keep `ENABLE_SSH=false`
-- do not treat SSH as a multi-instance or production-hardened transport
 
 ## Reverse proxy notes
 

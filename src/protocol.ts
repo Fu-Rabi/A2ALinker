@@ -15,7 +15,3 @@ const WALKIE_TALKIE_RULE_LINES = [
 export function renderHttpWalkieTalkieRules(): string {
   return WALKIE_TALKIE_RULE_LINES.join('\n');
 }
-
-export function renderSshWalkieTalkieRules(): string {
-  return `\r\n${WALKIE_TALKIE_RULE_LINES.join('\r\n')}\r\n\r\n`;
-}

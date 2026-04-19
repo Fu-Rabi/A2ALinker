@@ -4,6 +4,8 @@
 
 It acts as a switchboard for LLMs, allowing them to pair-program, debate, and share work across the internet without custom APIs, WebSockets, or a heavyweight SDK. If an AI agent can run `curl`, it can join an A2A Linker session.
 
+As of the current architecture, A2A Linker is an **HTTP-only** broker. The old SSH/SQLite transport path has been removed so the product, codebase, and deployment story all align around one transport model.
+
 ## In One Sentence
 
 Use A2A Linker when you want one AI agent to safely talk to another AI agent over the internet or across machines without building a custom integration.
@@ -25,7 +27,7 @@ The broker watches those markers so two agents do not keep auto-replying forever
 - Developers who want a simple HTTP transport instead of building their own agent bridge
 - Technical product managers who want to prototype agent-to-agent workflows without standing up a larger platform
 
-You do not need to understand Redis, SSH, or the internal protocol to try it. The fastest path is either:
+You do not need to understand Redis or the internal protocol to try it. The fastest path is either:
 
 - use the hosted broker at `https://broker.a2alinker.net`
 - self-host locally with Docker Compose
@@ -86,7 +88,6 @@ Best if you are developing or testing the broker directly.
    TRUST_PROXY=1 \
    HTTP_BIND_HOST=127.0.0.1 \
    HTTP_PORT=3000 \
-   ENABLE_SSH=false \
    npm start
    ```
 
@@ -156,7 +157,7 @@ The current production direction is:
 
 **Where messages go:** a message arrives as an HTTP POST body, is held ephemerally in memory and/or TTL-bound broker inbox state for delivery, is forwarded to the waiting participant, and is then discarded. There is still no durable message history table or message-body logging path.
 
-The legacy SQLite path still exists for the optional SSH broker, but the privacy-preserving production path is now Redis-backed HTTP. See [production.md](docs/production.md) for the deployment contract, Docker Compose notes, and operator guidance.
+The privacy-preserving production path is Redis-backed HTTP. See [production.md](docs/production.md) for the deployment contract, Docker Compose notes, and operator guidance.
 
 ### License & Usage Warning
 
@@ -188,7 +189,7 @@ flowchart LR
     B --- R[(Redis TTL state)]
 ```
 
-> **Transport note:** The HTTP production path is the supported production model. The SSH broker remains in the repo as an optional legacy/demo transport. Public deployments should prefer HTTP behind a reverse proxy and leave `ENABLE_SSH=false`.
+> **Transport note:** The supported transport is HTTP. Public deployments should prefer HTTP behind a reverse proxy.
 
 ## Deployment Summary
 
@@ -198,12 +199,21 @@ Supported production shapes:
 - terminate TLS at nginx or another reverse proxy
 - use `BROKER_STORE=redis`
 - set `TRUST_PROXY=1`
-- leave `ENABLE_SSH=false`
 - deploy either with `systemd` or with `docker compose`
 
 Direct in-process HTTPS is not the recommended production default. In production it requires `ALLOW_DIRECT_HTTPS_PROD=true`.
 
 For deeper operator guidance, see [production.md](docs/production.md).
+
+## Recent Cleanup
+
+The broker no longer carries a second legacy transport stack. This means:
+
+- no SSH broker path
+- no SQLite-backed room/session path
+- one supported runtime model for the broker itself: HTTP with memory or Redis-backed ephemeral state
+
+For operators and contributors, this reduces dependency weight, test surface, and documentation ambiguity.
 
 ## Environment Variables
 
@@ -216,9 +226,6 @@ For deeper operator guidance, see [production.md](docs/production.md).
 | `TRUST_PROXY` | Reverse-proxy trust setting for Express. Required in production. | `false` |
 | `HTTP_BIND_HOST` | Bind host for the HTTP app listener. | `0.0.0.0` in dev, `127.0.0.1` in production |
 | `HTTP_PORT` | HTTP app listener port. | `3000` |
-| `PUBLIC_HOST` | Hostname used in SSH banners and host key generation. | `localhost` |
-| `PORT` | Local listen port for the SSH broker. | `2222` |
-| `ENABLE_SSH` | Enables the legacy SSH broker. Public HTTP deployments should leave this disabled. | `false` |
 | `ADMIN_TOKEN` | Enables authenticated admin endpoints when set. | unset |
 | `HTTPS_KEY_PATH` | Optional direct TLS private key path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
 | `HTTPS_CERT_PATH` | Optional direct TLS certificate chain path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
@@ -441,8 +448,6 @@ curl -s -X POST http://127.0.0.1:3000/room-rule/headless \
   -H "Content-Type: application/json" \
   -d '{"headless": true}'
 ```
-
-The SSH broker on port `2222` remains available only for direct terminal access and developer testing. It is not the recommended public production path.
 
 ## Summary
 

@@ -15,8 +15,6 @@ Environment=NODE_ENV=production
 Environment=BROKER_STORE=redis
 Environment=HTTP_BIND_HOST=127.0.0.1
 Environment=HTTP_PORT=3000
-Environment=PUBLIC_HOST=broker.a2alinker.net
-Environment=ENABLE_SSH=false
 
 Restart=on-failure
 RestartSec=5

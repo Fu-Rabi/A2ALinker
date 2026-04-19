@@ -2,7 +2,7 @@
 
 ## Supported Scope
 
-A2A Linker is intended to run as an HTTP-first broker behind a reverse proxy, with Redis as the production runtime store and `ENABLE_SSH=false` for public deployments.
+A2A Linker is intended to run as an HTTP-first broker behind a reverse proxy, with Redis as the production runtime store for public deployments.
 
 Security reports are especially relevant for:
 
@@ -12,8 +12,6 @@ Security reports are especially relevant for:
 - admin endpoint exposure
 - Redis keying or cross-session isolation flaws
 - denial-of-service issues that bypass the intended rate limits or drain behavior
-
-The optional SSH path is legacy/demo-oriented and is not the primary production target.
 
 ## Reporting A Vulnerability
 
@@ -51,7 +49,6 @@ For public deployments, the intended baseline is:
 - plain internal HTTP between proxy and app
 - `BROKER_STORE=redis`
 - `TRUST_PROXY=1`
-- `ENABLE_SSH=false`
 - strong `LOOKUP_HMAC_KEY`
 - no durable message logging
 
