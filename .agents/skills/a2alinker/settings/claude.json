@@ -9,6 +9,7 @@
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-loop.sh)",
+      "Bash(bash .agents/skills/a2alinker/scripts/a2a-chat.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-ping.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/check-remote.sh)"

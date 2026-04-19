@@ -5,6 +5,35 @@
 
 set -euo pipefail
 
+# --- Pre-flight Artifact Cleanup ---
+# Prevent stale cache loops by removing old session artifacts before we even
+# try to resolve Node.js or validate arguments, UNLESS we are just reading status.
+has_status_or_help=false
+for arg in "$@"; do
+  if [ "$arg" = "--status" ] || [ "$arg" = "--help" ]; then
+    has_status_or_help=true
+    break
+  fi
+done
+
+if [ "$has_status_or_help" = false ]; then
+  for ((i=0; i<${#@}; i++)); do
+    if [ "${!i}" = "--mode" ]; then
+      next_idx=$((i + 1))
+      if [ $next_idx -le ${#@} ]; then
+        mode_val="${!next_idx}"
+        if [ "$mode_val" = "listen" ]; then
+          rm -f "$PWD/.a2a-listener-session.json"
+        elif [ "$mode_val" = "host" ]; then
+          rm -f "$PWD/.a2a-host-session.json"
+        fi
+      fi
+      break
+    fi
+  done
+fi
+# -----------------------------------
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 REPO_SUPERVISOR_JS="$ROOT_DIR/dist/a2a-supervisor.js"
@@ -12,9 +41,22 @@ REPO_SUPERVISOR_TS="$ROOT_DIR/src/a2a-supervisor.ts"
 SKILL_SUPERVISOR_JS="$SCRIPT_DIR/../runtime/a2a-supervisor.js"
 . "$SCRIPT_DIR/a2a-common.sh"
 
+if [ "$has_status_or_help" = false ]; then
+  a2a_prompt_for_debug_if_interactive
+fi
+
 DEFAULT_GEMINI_RUNNER="bash $SCRIPT_DIR/a2a-gemini-runner.sh"
 DEFAULT_CLAUDE_RUNNER="bash $SCRIPT_DIR/a2a-claude-runner.sh"
 DEFAULT_CODEX_RUNNER="bash $SCRIPT_DIR/a2a-codex-runner.sh"
+
+emit_listener_start_line() {
+  printf '%s\n' "$1" >&2
+}
+
+emit_listener_start_error_and_exit() {
+  emit_listener_start_line "LISTENER_START_ERROR: $1"
+  exit 1
+}
 
 resolve_supervisor_command() {
   if [ -f "$REPO_SUPERVISOR_JS" ]; then
@@ -51,8 +93,7 @@ prompt_for_broker_if_needed() {
         printf 'Remote broker URL or hostname: ' >&2
         read -r remote_target || true
         if [ -z "${remote_target:-}" ]; then
-          echo "ERROR: Remote broker selection requires a URL or hostname." >&2
-          exit 1
+          emit_listener_start_error_and_exit "missing_remote_broker_target"
         fi
         case "$remote_target" in
           http://*|https://*)
@@ -296,10 +337,23 @@ resolve_runner_selection() {
     return 0
   fi
 
-  persisted="$(read_persisted_runner "$mode_arg" || true)"
-  if [ -n "$persisted" ]; then
-    printf '%s\n' "$persisted"
+  if [ -n "$explicit_runner_kind" ]; then
+    if [ "$explicit_runner_kind" = "custom" ]; then
+      emit_listener_start_error_and_exit "custom_runner_requires_command"
+    fi
+    if ! is_runner_kind_available "$explicit_runner_kind"; then
+      emit_listener_start_error_and_exit "runner_not_available:$explicit_runner_kind"
+    fi
+    printf '%s\n%s\n' "$explicit_runner_kind" "$(runner_command_for_kind "$explicit_runner_kind")"
     return 0
+  fi
+
+  if [ "$mode_arg" != "listen" ]; then
+    persisted="$(read_persisted_runner "$mode_arg" || true)"
+    if [ -n "$persisted" ]; then
+      printf '%s\n' "$persisted"
+      return 0
+    fi
   fi
 
   if [ -t 0 ] && [ -t 1 ]; then
@@ -322,8 +376,7 @@ resolve_runner_selection() {
     return 0
   fi
 
-  echo "ERROR: No supported unattended runner is configured or installed. Configure --runner-command, A2A_RUNNER_COMMAND, or install gemini, claude, or codex." >&2
-  exit 1
+  emit_listener_start_error_and_exit "no_supported_runner_available"
 }
 
 if ! SUPERVISOR_INFO="$(resolve_supervisor_command)"; then
@@ -362,6 +415,7 @@ HAS_STATUS=false
 HAS_HELP=false
 MODE_ARG=""
 AGENT_LABEL_ARG=""
+CLI_RUNNER_KIND_ARG=""
 for arg in "$@"; do
   if [ "$arg" = "--runner-command" ]; then
     HAS_RUNNER=true
@@ -383,20 +437,6 @@ for arg in "$@"; do
   fi
 done
 
-if [ "$HAS_STATUS" = false ] && [ "$HAS_HELP" = false ]; then
-  if [ "$requires_explicit_broker" = true ]; then
-    ensure_explicit_broker_for_listener_attach
-  else
-    prompt_for_broker_if_needed
-  fi
-
-  if [ -n "${A2A_BASE_URL:-}" ]; then
-    echo "A2A broker target: $A2A_BASE_URL" >&2
-  elif [ -n "${A2A_SERVER:-}" ]; then
-    echo "A2A broker target: $A2A_SERVER" >&2
-  fi
-fi
-
 ARGS=("$@")
 for ((i=0; i<${#ARGS[@]}; i++)); do
   if [ "${ARGS[$i]}" = "--mode" ] && [ $((i + 1)) -lt ${#ARGS[@]} ]; then
@@ -405,7 +445,28 @@ for ((i=0; i<${#ARGS[@]}; i++)); do
   if [ "${ARGS[$i]}" = "--agent-label" ] && [ $((i + 1)) -lt ${#ARGS[@]} ]; then
     AGENT_LABEL_ARG="${ARGS[$((i + 1))]}"
   fi
+  if [ "${ARGS[$i]}" = "--runner-kind" ] && [ $((i + 1)) -lt ${#ARGS[@]} ]; then
+    CLI_RUNNER_KIND_ARG="${ARGS[$((i + 1))]}"
+  fi
 done
+
+if [ "$HAS_STATUS" = false ] && [ "$HAS_HELP" = false ]; then
+  if [ "$requires_explicit_broker" = true ]; then
+    ensure_explicit_broker_for_listener_attach
+  else
+    prompt_for_broker_if_needed
+  fi
+
+  if [ "$MODE_ARG" = "listen" ]; then
+    a2a_prompt_for_listener_policy_if_interactive
+  fi
+
+  if [ -n "${A2A_BASE_URL:-}" ]; then
+    echo "A2A broker target: $A2A_BASE_URL" >&2
+  elif [ -n "${A2A_SERVER:-}" ]; then
+    echo "A2A broker target: $A2A_SERVER" >&2
+  fi
+fi
 
 ATTENDED_FLAG="${A2A_UNATTENDED:-${A2A_HEADLESS:-}}"
 ATTENDED_FLAG_NORMALIZED="$(printf '%s' "$ATTENDED_FLAG" | tr '[:upper:]' '[:lower:]')"
@@ -417,6 +478,11 @@ case "$ATTENDED_FLAG_NORMALIZED" in
     SHOULD_FORCE_HEADLESS=false
     ;;
 esac
+
+REQUIRE_EXPLICIT_UNATTENDED_LISTENER_INPUTS=false
+if [ "$MODE_ARG" = "listen" ] && [ "$SHOULD_FORCE_HEADLESS" = true ]; then
+  REQUIRE_EXPLICIT_UNATTENDED_LISTENER_INPUTS=true
+fi
 
 EXTRA_ARGS=()
 if [ "$HAS_SCRIPT_DIR" = false ]; then
@@ -435,6 +501,22 @@ fi
 
 RUNNER_COMMAND_ARG="${A2A_RUNNER_COMMAND:-}"
 RUNNER_KIND_ARG="${A2A_RUNNER_KIND:-}"
+if [ -z "$RUNNER_KIND_ARG" ] && [ -n "$CLI_RUNNER_KIND_ARG" ]; then
+  RUNNER_KIND_ARG="$CLI_RUNNER_KIND_ARG"
+fi
+
+if [ "$REQUIRE_EXPLICIT_UNATTENDED_LISTENER_INPUTS" = true ]; then
+  if [ "$HAS_RUNNER" = false ] && [ -z "$RUNNER_KIND_ARG" ] && [ -z "$RUNNER_COMMAND_ARG" ]; then
+    emit_listener_start_error_and_exit "missing_runner_selection"
+  fi
+  if [ -z "${A2A_ALLOW_WEB_ACCESS+x}" ]; then
+    emit_listener_start_error_and_exit "missing_web_access_selection"
+  fi
+  if [ -z "${A2A_ALLOW_TESTS_BUILDS+x}" ]; then
+    emit_listener_start_error_and_exit "missing_tests_builds_selection"
+  fi
+fi
+
 if [ "$HAS_RUNNER" = false ]; then
   RESOLVED_RUNNER="$(resolve_runner_selection "$MODE_ARG" "$AGENT_LABEL_ARG" "$RUNNER_COMMAND_ARG" "$RUNNER_KIND_ARG")"
   RUNNER_KIND_ARG="$(printf '%s\n' "$RESOLVED_RUNNER" | sed -n '1p')"
@@ -445,6 +527,23 @@ if [ "$HAS_RUNNER" = false ]; then
   fi
 elif [ "$HAS_RUNNER_KIND" = false ] && [ -n "$RUNNER_KIND_ARG" ]; then
   EXTRA_ARGS+=(--runner-kind "$RUNNER_KIND_ARG")
+fi
+
+if [ "$MODE_ARG" = "listen" ] && [ "$HAS_STATUS" = false ] && [ "$HAS_HELP" = false ]; then
+  base_url_value="${A2A_BASE_URL:-}"
+  if [ -z "$base_url_value" ] && [ -n "${A2A_SERVER:-}" ]; then
+    case "$A2A_SERVER" in
+      http://*|https://*) base_url_value="$A2A_SERVER" ;;
+      *) base_url_value="https://$A2A_SERVER" ;;
+    esac
+  fi
+  emit_listener_start_line "LISTENER_START mode=$([ "$SHOULD_FORCE_HEADLESS" = true ] && printf 'unattended' || printf 'interactive')"
+  emit_listener_start_line "BROKER=${base_url_value:-http://127.0.0.1:3000}"
+  emit_listener_start_line "LABEL=${AGENT_LABEL_ARG:-unset}"
+  emit_listener_start_line "RUNNER=${RUNNER_KIND_ARG:-unset}"
+  emit_listener_start_line "WEB_ACCESS=${A2A_ALLOW_WEB_ACCESS:-unset}"
+  emit_listener_start_line "TESTS_BUILDS=${A2A_ALLOW_TESTS_BUILDS:-unset}"
+  emit_listener_start_line "DEBUG=$([ "${A2A_DEBUG:-0}" = "1" ] && printf 'true' || printf 'false')"
 fi
 
 if [ "$SUPERVISOR_BIN" = "npx" ]; then

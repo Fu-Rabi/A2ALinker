@@ -13,6 +13,23 @@ function copyFile(sourcePath: string, destinationPath: string): void {
     fs.copyFileSync(sourcePath, destinationPath);
 }
 
+function withHostToken<T>(token: string, run: () => T): T {
+    const tokenFile = '/tmp/a2a_host_token';
+    const previousToken = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8') : null;
+
+    fs.writeFileSync(tokenFile, token, 'utf8');
+
+    try {
+        return run();
+    } finally {
+        if (previousToken === null) {
+            fs.rmSync(tokenFile, { force: true });
+        } else {
+            fs.writeFileSync(tokenFile, previousToken, 'utf8');
+        }
+    }
+}
+
 describe('A2A shell script usage guards', () => {
     it('forwards unattended listener intent to the supervisor as --headless true', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-headless-'));
@@ -36,6 +53,9 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
                     A2A_BASE_URL: 'http://127.0.0.1:3000',
                     A2A_UNATTENDED: 'true',
+                    A2A_RUNNER_KIND: 'codex',
+                    A2A_ALLOW_WEB_ACCESS: 'false',
+                    A2A_ALLOW_TESTS_BUILDS: 'true',
                 },
                 encoding: 'utf8',
             },
@@ -47,8 +67,75 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         expect(capturedArgs).toContain('listen');
         expect(capturedArgs).toContain('--headless');
         expect(capturedArgs).toContain('true');
+        expect(result.stderr).toContain('LISTENER_START mode=unattended');
+        expect(result.stderr).toContain('RUNNER=codex');
+        expect(result.stderr).toContain('WEB_ACCESS=false');
+        expect(result.stderr).toContain('TESTS_BUILDS=true');
 
         fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('fails fast for unattended listeners when runner selection is missing', () => {
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-supervisor.sh', '--mode', 'listen', '--agent-label', 'Codi'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_UNATTENDED: 'true',
+                    A2A_ALLOW_WEB_ACCESS: 'false',
+                    A2A_ALLOW_TESTS_BUILDS: 'true',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('LISTENER_START_ERROR: missing_runner_selection');
+    });
+
+    it('fails fast for unattended listeners when web access selection is missing', () => {
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-supervisor.sh', '--mode', 'listen', '--agent-label', 'Codi'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_UNATTENDED: 'true',
+                    A2A_RUNNER_KIND: 'codex',
+                    A2A_ALLOW_TESTS_BUILDS: 'true',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('LISTENER_START_ERROR: missing_web_access_selection');
+    });
+
+    it('fails fast for unattended listeners when tests/builds selection is missing', () => {
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-supervisor.sh', '--mode', 'listen', '--agent-label', 'Codi'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_UNATTENDED: 'true',
+                    A2A_RUNNER_KIND: 'codex',
+                    A2A_ALLOW_WEB_ACCESS: 'false',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('LISTENER_START_ERROR: missing_tests_builds_selection');
     });
 
     it('allows read-only listener status without broker prompts or runner injection', () => {
@@ -169,6 +256,31 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         fs.rmSync(root, { recursive: true, force: true });
     });
 
+    it('enables debug mode for the folder and persists the marker', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-debug-prompt-'));
+        const capturedPath = path.join(root, 'captured-env');
+        copyFile(
+            path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-common.sh'),
+            path.join(root, '.agents/skills/a2alinker/scripts/a2a-common.sh'),
+        );
+
+        const result = spawnSync(
+            'bash',
+            ['-lc', `. .agents/skills/a2alinker/scripts/a2a-common.sh && a2a_enable_debug_mode && printf 'A2A_DEBUG=%s\\n' "\${A2A_DEBUG:-}" > "${capturedPath}"`],
+            {
+                cwd: root,
+                env: process.env,
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(fs.readFileSync(capturedPath, 'utf8')).toContain('A2A_DEBUG=1');
+        expect(fs.readFileSync(path.join(root, '.a2a-debug-mode'), 'utf8')).toContain('enabled');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
     it('passes the packaged runtime target when the wrapper falls back without repo dist or src', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-packaged-'));
         const binDir = path.join(root, 'bin');
@@ -202,6 +314,7 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
                 env: {
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_RUNNER_KIND: 'codex',
                 },
                 encoding: 'utf8',
             },
@@ -215,7 +328,7 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         fs.rmSync(root, { recursive: true, force: true });
     });
 
-    it('reuses a persisted listener policy runner instead of defaulting to codex', () => {
+    it('ignores a persisted listener policy runner on a fresh listener launch', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-runner-persisted-'));
         const binDir = path.join(root, 'bin');
         const capturedArgsPath = path.join(root, 'captured-args');
@@ -246,12 +359,13 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
 
         const result = spawnSync(
             'bash',
-            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'Gemma'],
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'Codi'],
             {
                 cwd: root,
                 env: {
                     ...process.env,
                     PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_RUNNER_KIND: 'codex',
                 },
                 encoding: 'utf8',
             },
@@ -260,8 +374,8 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         expect(result.status).toBe(0);
         const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
         expect(capturedArgs).toContain('--runner-command');
-        expect(capturedArgs).toContain('a2a-gemini-runner.sh');
-        expect(capturedArgs).not.toContain('a2a-codex-runner.sh');
+        expect(capturedArgs).toContain('a2a-codex-runner.sh');
+        expect(capturedArgs).not.toContain('a2a-gemini-runner.sh');
 
         fs.rmSync(root, { recursive: true, force: true });
     });
@@ -301,7 +415,7 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         fs.rmSync(root, { recursive: true, force: true });
     });
 
-    it('preserves a custom persisted runner command with spaces', () => {
+    it('ignores a custom persisted listener runner command with spaces on a fresh listener launch', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-runner-custom-'));
         const binDir = path.join(root, 'bin');
         const capturedArgsPath = path.join(root, 'captured-args');
@@ -325,6 +439,7 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
             sessionGrants: [],
         }, null, 2), 'utf8');
 
+        writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
         writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
 printf '%s\n' "$@" > "${capturedArgsPath}"
 `);
@@ -332,6 +447,113 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         const result = spawnSync(
             'bash',
             [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'LocalLLM'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_RUNNER_KIND: 'codex',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
+        expect(capturedArgs).toContain('--runner-kind');
+        expect(capturedArgs).toContain('codex');
+        expect(capturedArgs).toContain('a2a-codex-runner.sh');
+        expect(capturedArgs).not.toContain('/tmp/my\\\\ custom\\\\ runner.sh');
+        expect(capturedArgs).not.toContain('--model llama3');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('prefers an explicit env runner kind over a persisted listener runner', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-runner-explicit-env-'));
+        const binDir = path.join(root, 'bin');
+        const capturedArgsPath = path.join(root, 'captured-args');
+        const persistedCommand = `bash ${path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-gemini-runner.sh')}`;
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-listener-policy.json'), JSON.stringify({
+            version: 1,
+            mode: 'pre-authorized-listener',
+            createdAt: '2026-04-11T00:00:00.000Z',
+            expiresAt: '2099-04-11T00:00:00.000Z',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            workspaceRoot: root,
+            allowedCommands: ['npm test'],
+            allowedPaths: [root],
+            allowRepoEdits: true,
+            allowTestsBuilds: true,
+            denyNetworkExceptBroker: true,
+            allowRemoteTriggerWithinScope: true,
+            runnerKind: 'gemini',
+            runnerCommand: persistedCommand,
+            sessionGrants: [],
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
+        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+printf '%s\n' "$@" > "${capturedArgsPath}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'Codi'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_RUNNER_KIND: 'codex',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
+        expect(capturedArgs).toContain('--runner-kind');
+        expect(capturedArgs).toContain('codex');
+        expect(capturedArgs).toContain('a2a-codex-runner.sh');
+        expect(capturedArgs).not.toContain('a2a-gemini-runner.sh');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('prefers an explicit CLI runner kind over a persisted listener runner', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-runner-explicit-cli-'));
+        const binDir = path.join(root, 'bin');
+        const capturedArgsPath = path.join(root, 'captured-args');
+        const persistedCommand = `bash ${path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-gemini-runner.sh')}`;
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-listener-policy.json'), JSON.stringify({
+            version: 1,
+            mode: 'pre-authorized-listener',
+            createdAt: '2026-04-11T00:00:00.000Z',
+            expiresAt: '2099-04-11T00:00:00.000Z',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            workspaceRoot: root,
+            allowedCommands: ['npm test'],
+            allowedPaths: [root],
+            allowRepoEdits: true,
+            allowTestsBuilds: true,
+            denyNetworkExceptBroker: true,
+            allowRemoteTriggerWithinScope: true,
+            runnerKind: 'gemini',
+            runnerCommand: persistedCommand,
+            sessionGrants: [],
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
+        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+printf '%s\n' "$@" > "${capturedArgsPath}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'Codi', '--runner-kind', 'codex'],
             {
                 cwd: root,
                 env: {
@@ -345,9 +567,9 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         expect(result.status).toBe(0);
         const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
         expect(capturedArgs).toContain('--runner-kind');
-        expect(capturedArgs).toContain('custom');
-        expect(capturedArgs).toContain('/tmp/my\\\\ custom\\\\ runner.sh');
-        expect(capturedArgs).toContain('--model llama3');
+        expect(capturedArgs).toContain('codex');
+        expect(capturedArgs).toContain('a2a-codex-runner.sh');
+        expect(capturedArgs).not.toContain('a2a-gemini-runner.sh');
 
         fs.rmSync(root, { recursive: true, force: true });
     });
@@ -706,6 +928,481 @@ printf 'TIMEOUT_ROOM_CLOSED\\n200'
         fs.rmSync(root, { recursive: true, force: true });
     });
 
+    it('surfaces duplicate waiter conflicts instead of hiding them as ping failures', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-wait-409-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+if printf '%s ' "$@" | grep -q '/wait'; then
+  printf '{"error":"Wait already pending"}\\n409'
+  exit 0
+fi
+printf '{"room_alive":true,"partner_connected":true,"partner_last_seen_ms":0}\\n200'
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-wait-message.sh', 'host'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'http://127.0.0.1:3000',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('WAIT_ALREADY_PENDING');
+
+        fs.unlinkSync(tokenPath);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('retries a transient duplicate waiter conflict before surfacing it', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-wait-retry-'));
+        const scriptDir = path.join(root, 'scripts');
+        const statePath = path.join(root, 'wait-count');
+        fs.mkdirSync(scriptDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-loop.sh', path.join(scriptDir, 'a2a-loop.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-loop.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+STATE_FILE="${statePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT="$(cat "$STATE_FILE")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+if [ "$COUNT" -lt 3 ]; then
+  echo "WAIT_ALREADY_PENDING"
+else
+  cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ Reply after waiter handoff
+└────
+EOF
+fi
+`);
+
+        try {
+            const result = withHostToken('tok_wait_retry', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'host'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_MAX_WAIT_CONFLICTS: '4',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('Reply after waiter handoff');
+            expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('3');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('restores the host passive waiter when the foreground chat is interrupted', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-interrupt-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterStartedPath = path.join(root, 'waiter-started');
+        const inflightPath = path.join(sessionDir, 'a2a_host_inflight_message.txt');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            sessionDir,
+        }), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+SESSION_DIR="${sessionDir}"
+printf '%s\\n' "probe [OVER]" > "$SESSION_DIR/a2a_host_inflight_message.txt"
+echo "DELIVERED"
+kill -TERM "$PPID"
+sleep 1
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+mkdir -p "${sessionDir}"
+printf '%s\\n' "$$" > "${sessionDir}/a2a_host_passive_wait.pid"
+echo started >> "${waiterStartedPath}"
+`);
+
+        try {
+            const result = withHostToken('tok_host_interrupt', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).not.toBe(0);
+            expect(fs.readFileSync(waiterStartedPath, 'utf8')).toContain('started');
+            expect(fs.readFileSync(inflightPath, 'utf8')).toContain('probe [OVER]');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('syncs host artifact state back to waiting_for_local_task when the passive waiter restarts', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-artifact-sync-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'connected',
+            lastEvent: 'foreground_chat_active',
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+        }), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ Reply after normal turn
+└────
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+mkdir -p "${sessionDir}"
+printf '%s\\n' "$$" > "${sessionDir}/a2a_host_passive_wait.pid"
+sleep 1
+`);
+
+        try {
+            const result = withHostToken('tok_host_artifact_sync', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8'));
+            expect(artifact.status).toBe('waiting_for_local_task');
+            expect(artifact.lastEvent).toBe('waiting_for_local_task');
+            expect(typeof artifact.pid).toBe('number');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('does not start a new passive waiter when foreground chat reports WAIT_ALREADY_PENDING', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-wait-conflict-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterStartedPath = path.join(root, 'waiter-started');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            sessionDir,
+            pid: 123456,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+        }), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+echo "DELIVERED"
+echo "WAIT_ALREADY_PENDING"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+echo started >> "${waiterStartedPath}"
+`);
+
+        try {
+            const result = withHostToken('tok_wait_conflict', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('WAIT_ALREADY_PENDING');
+            expect(fs.existsSync(waiterStartedPath)).toBe(false);
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8'));
+            expect(artifact.status).toBe('error');
+            expect(artifact.lastEvent).toBe('WAIT_ALREADY_PENDING');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('waits for the partner reply without resending after an interrupted delivered host send', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-resume-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const sendsPath = path.join(root, 'sends.log');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            sessionDir,
+        }), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+SESSION_DIR="${sessionDir}"
+printf '%s\\n' "$2" >> "${sendsPath}"
+printf '%s\\n' "$2" > "$SESSION_DIR/a2a_host_inflight_message.txt"
+echo "DELIVERED"
+kill -TERM "$PPID"
+sleep 1
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+mkdir -p "${sessionDir}"
+printf '%s\\n' "$$" > "${sessionDir}/a2a_host_passive_wait.pid"
+cat <<'EOF' > "${sessionDir}/a2a_host_pending_message.txt"
+MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ Reply after interrupted send
+└────
+EOF
+`);
+
+        try {
+            withHostToken('tok_host_resume', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            const resumed = withHostToken('tok_host_resume', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(resumed.status).toBe(0);
+            expect(resumed.stdout).toContain('Previous host send was already delivered before interruption');
+            expect(resumed.stdout).toContain('Reply after interrupted send');
+            expect(fs.readFileSync(sendsPath, 'utf8').trim().split('\n')).toEqual(['probe [OVER]']);
+            expect(fs.existsSync(path.join(sessionDir, 'a2a_host_inflight_message.txt'))).toBe(false);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('uses the saved folder debug marker without prompting again in chat mode', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-debug-marker-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            sessionDir,
+        }), 'utf8');
+        fs.writeFileSync(path.join(root, '.a2a-debug-mode'), 'enabled\n', 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+echo "MESSAGE_RECEIVED"
+echo "debug=\${A2A_DEBUG:-0}"
+`);
+
+        try {
+            const result = withHostToken('tok_host_debug_marker', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('debug=1');
+            expect(result.stdout).not.toContain('Run in debug mode?');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('maps host token loss to TIMEOUT_ROOM_CLOSED when the local listener artifact is already closed', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-wait-listener-closed-'));
+        const scriptDir = path.join(root, 'scripts');
+        fs.mkdirSync(scriptDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-wait-message.sh', path.join(scriptDir, 'a2a-wait-message.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-wait-message.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-listener-session.json'), JSON.stringify({
+            mode: 'listen',
+            status: 'closed',
+            lastEvent: 'system_closed',
+            sessionDir: path.join(root, 'listener-session'),
+        }), 'utf8');
+
+        try {
+            const result = spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-wait-message.sh'), 'host'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            );
+
+            expect(result.status).toBe(0);
+            expect(result.stdout.trim()).toBe('TIMEOUT_ROOM_CLOSED');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('resends once if an interrupted delivered host send has no recoverable reply', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-recover-resend-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const sendsPath = path.join(root, 'sends.log');
+        const waitStatePath = path.join(root, 'wait-state');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            sessionDir,
+        }), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+SESSION_DIR="${sessionDir}"
+printf '%s\\n' "$2" >> "${sendsPath}"
+printf '%s\\n' "$2" > "$SESSION_DIR/a2a_host_inflight_message.txt"
+echo "DELIVERED"
+STATE_FILE="${waitStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT="$(cat "$STATE_FILE")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+if [ "$COUNT" -eq 1 ]; then
+  kill -TERM "$PPID"
+  sleep 1
+fi
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ Reply after resend
+└────
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+echo "TIMEOUT_ROOM_ALIVE last_seen_ms=0"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+mkdir -p "${sessionDir}"
+printf '%s\\n' "$$" > "${sessionDir}/a2a_host_passive_wait.pid"
+`);
+
+        try {
+            withHostToken('tok_host_recover_resend', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            const resumed = withHostToken('tok_host_recover_resend', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        A2A_INFLIGHT_RECOVERY_WAIT_TIMEOUT: '1',
+                    },
+                },
+            ));
+
+            expect(resumed.status).toBe(0);
+            expect(resumed.stdout).toContain('No reply was recoverable within 1s, so the message will be resent once');
+            expect(resumed.stdout).toContain('Reply after resend');
+            expect(fs.readFileSync(sendsPath, 'utf8').trim().split('\n')).toEqual(['probe [OVER]', 'probe [OVER]']);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('tells the listener side to keep a waiter active if it wants to observe close events', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-listen-usage-'));
         const binDir = path.join(root, 'bin');
@@ -762,6 +1459,74 @@ printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_demo123"}'
         expect(result.stdout).toContain('ERROR: Cannot reach A2A Linker server at https://broker.a2alinker.net (curl exit 6)');
 
         fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('uses the saved folder debug marker in a2a-listen.sh and writes a join debug log', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-listen-debug-marker-'));
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-debug-mode'), 'enabled\n', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+printf '%s' '{"token":"tok_listener123456","listenerCode":"listen_debug123"}'
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-listen.sh'), 'false'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'http://127.0.0.1:3000',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        const debugLog = fs.readFileSync('/tmp/a2a_join_debug.log', 'utf8');
+        expect(debugLog).toContain('listen:start');
+        expect(debugLog).toContain('listen:setup_complete listener_code=listen_debug123');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync('/tmp/a2a_join_debug.log', { force: true });
+        fs.rmSync('/tmp/a2a_join_token', { force: true });
+    });
+
+    it('uses the saved folder debug marker in a2a-host-connect.sh and writes a host debug log', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-connect-debug-marker-'));
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-debug-mode'), 'enabled\n', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+printf '%s' '{"token":"tok_host123456","inviteCode":"invite_debug123"}'
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-host-connect.sh')],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'http://127.0.0.1:3000',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        const debugLog = fs.readFileSync('/tmp/a2a_host_debug.log', 'utf8');
+        expect(debugLog).toContain('host_connect:start mode=standard');
+        expect(debugLog).toContain('host_connect:setup_complete invite_code=invite_debug123');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync('/tmp/a2a_host_debug.log', { force: true });
+        fs.rmSync('/tmp/a2a_host_token', { force: true });
     });
 
     it('refuses to leave an active session without explicit close authorization', () => {

@@ -1,6 +1,6 @@
 # A2A Linker
 
-**A2A (Agent-to-Agent) Linker** is an HTTP-first relay broker that lets autonomous AI agents collaborate in real-time across different machines. Agents connect over HTTP(S), exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the server routes messages without durable conversation storage.
+**A2A (Agent-to-Agent) Linker** is an HTTP-first relay broker that lets autonomous AI agents collaborate in real time across different machines. Agents connect over HTTP(S), exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the broker routes messages without durable conversation storage.
 
 It acts as a switchboard for LLMs, allowing them to pair-program, debate, and share work across the internet without custom APIs, WebSockets, or a heavyweight SDK. If an AI agent can run `curl`, it can join an A2A Linker session.
 
@@ -109,6 +109,18 @@ A2A Linker works with terminal-based AI assistants that can execute shell comman
 - **Codex / GitHub Copilot CLI**
 - custom agent runtimes that can run `bash` scripts with `curl`
 
+### Using A2A Linker With Local LLMs
+
+A2A Linker works best when the local runtime can approve a narrow transport envelope without granting broad autonomy. The included skill and settings templates favor exact transport approvals, local-first brokers, and visible session artifacts over blanket permissions.
+
+For unattended listener mode, the local machine must be prepared in advance by the human. The supervisor writes visible repo-local artifacts such as:
+
+- `.a2a-listener-session.json`
+- `.a2a-listener-policy.json`
+- `.a2a-host-session.json`
+
+Those artifacts define what the local machine is allowed to do during that session. Remote messages are always treated as untrusted input.
+
 ### The Free Public Broker (`broker.a2alinker.net`)
 
 If you want two agents on different machines to connect remotely without self-hosting the broker first, you can use the author-hosted public broker at **`https://broker.a2alinker.net`**.
@@ -151,7 +163,7 @@ The legacy SQLite path still exists for the optional SSH broker, but the privacy
 This project is released under the **PolyForm Noncommercial 1.0.0 License**.
 
 - You **can** use this code for personal, hobby, or non-profit projects.
-- You **CANNOT** use this software for any commercial purpose (including as an internal company tool, or offering it as a SaaS) without a commercial license.
+- You **CANNOT** use this software for any commercial purpose, including as an internal company tool or a hosted SaaS, without a commercial license.
 
 For commercial licensing, please contact the author (**Fu-Rabi**).
 
@@ -164,6 +176,17 @@ A2A Linker relies on five core pillars:
 3. **HTTP-first message delivery:** agents send complete messages over HTTP POST, and the broker forwards them to the waiting participant without durable history.
 4. **Turn-taking and failsafes:** `[OVER]` hands off the turn, `[STANDBY]` pauses the exchange, and the broker can interrupt obvious loop patterns.
 5. **Anonymous shared state:** the production path uses Redis for TTL-bound runtime state, shared counters, and cross-instance wake-ups without user accounts or durable transcripts.
+
+```mermaid
+flowchart LR
+    A[Agent A<br/>HOST or JOIN] -->|register / create / join| B[A2A Linker Broker]
+    C[Agent B<br/>JOIN or HOST] -->|register / listen / join| B
+    A -->|send message [OVER]/[STANDBY]| B
+    B -->|deliver to waiting partner| C
+    C -->|send reply| B
+    B -->|deliver back| A
+    B --- R[(Redis TTL state)]
+```
 
 > **Transport note:** The HTTP production path is the supported production model. The SSH broker remains in the repo as an optional legacy/demo transport. Public deployments should prefer HTTP behind a reverse proxy and leave `ENABLE_SSH=false`.
 
@@ -208,24 +231,159 @@ For production deployment assets and the operator runbook, see [production.md](d
 
 ## Connect Agents With The Included Skill
 
-The easiest way to use A2A Linker is the included agent skill under `.agents/skills/a2alinker/`. It lets your local AI assistant handle the transport scripts safely instead of making you compose raw HTTP commands by hand.
+The easiest way to use A2A Linker is the included skill under `.agents/skills/a2alinker/`. It lets your local AI assistant handle the transport scripts and session supervisor safely instead of making you compose raw HTTP commands by hand.
 
-At a high level:
+### Skill Structure
 
-1. Person A asks their local AI to start a host session.
-2. The broker returns a one-time `invite_...` code.
-3. Person B gives that code to their local AI to join the session.
-4. The two agents then take turns using the `[OVER]` / `[STANDBY]` protocol.
+The skill is self-contained under `.agents/skills/a2alinker/`:
 
-If you want an unattended remote machine, use listener mode:
+```text
+.agents/skills/a2alinker/
+├── SKILL.md
+├── runtime/
+├── scripts/
+│   ├── a2a-chat.sh
+│   ├── a2a-common.sh
+│   ├── a2a-host-connect.sh
+│   ├── a2a-join-connect.sh
+│   ├── a2a-leave.sh
+│   ├── a2a-listen.sh
+│   ├── a2a-loop.sh
+│   ├── a2a-passive-wait.sh
+│   ├── a2a-send.sh
+│   ├── a2a-supervisor.sh
+│   ├── a2a-wait-message.sh
+│   ├── a2a-claude-runner.sh
+│   ├── a2a-codex-runner.sh
+│   ├── a2a-gemini-runner.sh
+│   └── a2a-ollama-runner.example.sh
+└── settings/
+```
+
+### How the Agent Waits for Messages
+
+Rather than polling logs, A2A Linker uses event-driven long-polling. After sending a message, the agent makes one call to `a2a-loop.sh`, which then:
+
+1. optionally sends a message first
+2. makes one HTTP GET request to `/wait`
+3. stays idle until a real message or terminal event arrives
+4. returns when there is meaningful content or the session ends
+
+This keeps token usage near zero while waiting.
+
+### The A2A Supervisor & Unattended Mode
+
+For runtimes that do not self-wake after tool results, or when you want a completely unattended local agent, A2A Linker includes a session-scoped supervisor. The recommended entrypoint is:
+
+```bash
+npm run build
+bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
+  --mode listen \
+  --agent-label Codi \
+  --runner-kind codex
+```
+
+For fresh unattended listener launches, the current contract is explicit:
+
+- runner must be specified
+- web access must be specified
+- tests/builds permission must be specified
+
+Example:
+
+```bash
+A2A_BASE_URL=https://broker.a2alinker.net \
+A2A_UNATTENDED=true \
+A2A_RUNNER_KIND=codex \
+A2A_ALLOW_WEB_ACCESS=true \
+A2A_ALLOW_TESTS_BUILDS=true \
+bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
+  --mode listen \
+  --agent-label Codi
+```
+
+The detached startup log now emits resolved startup state and the listener code directly. When launching in the background, inspect the outer log first:
+
+```bash
+nohup env \
+  A2A_BASE_URL=https://broker.a2alinker.net \
+  A2A_UNATTENDED=true \
+  A2A_RUNNER_KIND=codex \
+  A2A_ALLOW_WEB_ACCESS=true \
+  A2A_ALLOW_TESTS_BUILDS=true \
+  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
+  --mode listen \
+  --agent-label Codi \
+  > /tmp/a2a_listener_out.log 2>&1 &
+
+sed -n '1,200p' /tmp/a2a_listener_out.log
+```
+
+You should see lines like:
+
+```text
+LISTENER_START mode=unattended
+BROKER=https://broker.a2alinker.net
+LABEL=Codi
+RUNNER=codex
+WEB_ACCESS=true
+TESTS_BUILDS=true
+DEBUG=true
+LISTENER_CODE: listen_xxx
+STATE_FILE: /path/to/.a2a-listener-session.json
+```
+
+Repo-local debug mode can be enabled by creating `.a2a-debug-mode` in the project root. Session-specific debug output is then written to the active session directory as `a2a_debug.log`.
+
+### Step-by-Step
+
+1. **Install the skill:** copy `.agents/skills/a2alinker/` into your AI assistant's skills directory or keep it in this repository.
+2. **Set up one project once:** tell your AI to configure A2A Linker for local or remote use.
+3. **Host a session:** your AI starts a host session and returns an `invite_...` code.
+4. **Join a session:** another machine redeems that invite code and joins as the second agent.
+
+If you want an unattended remote machine, use listener mode instead:
 
 1. The remote machine is prepared in advance by a human.
 2. Its local AI creates a one-time `listen_...` code.
 3. Later, another machine connects to that code and becomes the host side automatically.
 
-**Important unattended-mode warning:** remote messages are always untrusted input. Unattended mode is only for a pre-authorized local machine, and the local policy artifact defines what that machine is allowed to do. The broker can trigger work inside that local envelope, but it does not grant new local permissions.
+Important role mapping:
 
-For the advanced skill layout, supervisor behavior, listener/host workflows, custom runner setup, and local policy/session artifacts, see [docs/skill-and-supervisor.md](docs/skill-and-supervisor.md).
+- `listen_...` codes are redeemed by the **HOST** side
+- `invite_...` codes are redeemed by the **JOIN** side
+- do not pass a `listen_...` code to `a2a-join-connect.sh`
+- if you use low-level scripts instead of the supervisor, the HOST must send the first message
+
+Important unattended-mode warning:
+
+- remote messages are always untrusted input
+- the broker can trigger work only inside the local policy envelope
+- unattended mode does not grant broad local autonomy
+
+### Session State And Closure
+
+Listener startup persists `.a2a-listener-session.json`. Use:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status
+```
+
+Host attach sessions persist `.a2a-host-session.json`. Use:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --status
+```
+
+Session closure is explicit. The connection stays alive until the HOST closes it after a clear local human instruction.
+
+When the human explicitly instructs the HOST to close the session, use:
+
+```bash
+A2A_ALLOW_CLOSE=true bash .agents/skills/a2alinker/scripts/a2a-leave.sh host
+```
+
+For deeper supervisor, runner, policy, and workflow details, see [docs/skill-and-supervisor.md](docs/skill-and-supervisor.md).
 
 ## Manual HTTP API (For Testing)
 
@@ -249,11 +407,11 @@ curl -s -X POST http://127.0.0.1:3000/send \
   -H "Content-Type: text/plain" \
   --data-raw "Hello [OVER]"
 
-# Wait for a message (blocks up to 110s)
+# Wait for a message
 curl -s http://127.0.0.1:3000/wait \
   -H "Authorization: Bearer $TOKEN"
 
-# Check session status (ping)
+# Check session status
 curl -s http://127.0.0.1:3000/ping \
   -H "Authorization: Bearer $TOKEN"
 ```
@@ -262,12 +420,10 @@ curl -s http://127.0.0.1:3000/ping \
 # Pre-stage a listener room (JOINER runs this before leaving)
 curl -s -X POST http://127.0.0.1:3000/listen \
   -H "Authorization: Bearer $TOKEN"
-# Returns: {"listenerCode":"listen_xxx","roomName":"room_xxx"}
 
 # Connect as HOST using a listener code
 curl -s -X POST http://127.0.0.1:3000/join/listen_xxx \
   -H "Authorization: Bearer $TOKEN"
-# Returns: {"role":"host","headless":false,...}
 
 # Set headless room rule (HOST only — run after connecting)
 curl -s -X POST http://127.0.0.1:3000/room-rule/headless \

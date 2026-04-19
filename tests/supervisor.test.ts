@@ -135,6 +135,96 @@ describe('runSupervisor', () => {
         expect(artifact.error).toContain('Supervisor process is no longer running');
     });
 
+    it('marks host status closed when the mailbox already contains a terminal close event', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-mailbox-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            attachedListenerCode: 'listen_demo123',
+            inviteCode: null,
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_host_pending_message.txt'), 'TIMEOUT_ROOM_CLOSED\n', 'utf8');
+
+        const artifact = readHostSessionArtifact(root);
+
+        expect(artifact.status).toBe('closed');
+        expect(artifact.lastEvent).toBe('room_closed');
+    });
+
+    it('upgrades stale host status to mailbox error when the pending event is stronger than liveness', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-stale-mailbox-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: 999999,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            attachedListenerCode: 'listen_demo123',
+            inviteCode: null,
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_host_pending_message.txt'), 'WAIT_ALREADY_PENDING\n', 'utf8');
+
+        const artifact = readHostSessionArtifact(root);
+
+        expect(artifact.status).toBe('error');
+        expect(artifact.lastEvent).toBe('WAIT_ALREADY_PENDING');
+        expect(artifact.error).toContain('WAIT_ALREADY_PENDING');
+    });
+
+    it('treats a host token-missing mailbox error as closed when the local listener artifact is already closed', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-token-missing-closed-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            attachedListenerCode: 'listen_demo123',
+            inviteCode: null,
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(root, '.a2a-listener-session.json'), JSON.stringify({
+            mode: 'listen',
+            status: 'closed',
+            lastEvent: 'system_closed',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir: path.join(root, 'listener-session'),
+            pid: null,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            listenerCode: 'listen_demo123',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_host_pending_message.txt'), 'ERROR: Token file not found at /tmp/a2a_host_token. Run the connect script first.\n', 'utf8');
+
+        const artifact = readHostSessionArtifact(root);
+
+        expect(artifact.status).toBe('closed');
+        expect(artifact.lastEvent).toBe('system_closed');
+        expect(artifact.error).toBeNull();
+    });
+
     it('processes a JOINER conversation turn and resumes through a2a-loop', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
         const loopStatePath = path.join(root, 'loop-state');
@@ -485,6 +575,7 @@ exit 0
 
     it('writes a stable listener session artifact that records the listener code and closed state', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const infoLogs: string[] = [];
 
         writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
 echo "ROLE: join"
@@ -510,7 +601,7 @@ exit 0
             scriptDir,
             sessionRoot,
             cwd: root,
-            logger: { info: () => undefined, error: () => undefined },
+            logger: { info: (entry) => infoLogs.push(entry), error: () => undefined },
         });
 
         const artifactPath = path.join(root, '.a2a-listener-session.json');
@@ -522,6 +613,39 @@ exit 0
         expect(artifact.headless).toBe(true);
         expect(artifact.sessionDir).toBe(session.sessionDir);
         expect(artifact.status).toBe('closed');
+        expect(infoLogs.some((entry) => entry.includes('LISTENER_CODE: listen_demo123'))).toBe(true);
+        expect(infoLogs.some((entry) => entry.includes(`STATE_FILE: ${artifactPath}`))).toBe(true);
+    });
+
+    it('emits a plain listener startup error line when listener setup fails', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const errorLogs: string[] = [];
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ERROR: Cannot reach A2A Linker server at https://broker.a2alinker.net (curl exit 6)"
+exit 1
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        await expect(runSupervisor({
+            mode: 'listen',
+            agentLabel: 'codex-like',
+            runnerCommand: `node "${runnerPath}"`,
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_BASE_URL: 'https://broker.a2alinker.net',
+            },
+            logger: { info: () => undefined, error: (entry) => errorLogs.push(entry) },
+        })).rejects.toThrow('Cannot reach A2A Linker server');
+
+        expect(errorLogs.some((entry) => entry.includes('LISTENER_START_ERROR: Command failed: bash'))).toBe(true);
+        expect(errorLogs.some((entry) => entry.includes('Cannot reach A2A Linker server at https://broker.a2alinker.net'))).toBe(true);
     });
 
     it('refreshes a persisted listener policy broker when the current launch explicitly selects a different broker', async () => {
@@ -580,6 +704,70 @@ exit 0
         expect(policy.brokerEndpoint).toBe('https://broker.a2alinker.net');
     });
 
+    it('recreates listener policy from current launch settings instead of reusing stale listener policy fields', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+
+        fs.writeFileSync(path.join(root, '.a2a-listener-policy.json'), JSON.stringify({
+            version: 1,
+            mode: 'pre-authorized-listener',
+            createdAt: '2026-04-11T00:00:00.000Z',
+            expiresAt: '2099-04-11T00:00:00.000Z',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            workspaceRoot: root,
+            allowedCommands: ['npm test'],
+            allowedPaths: [root],
+            allowRepoEdits: true,
+            allowTestsBuilds: true,
+            allowWebAccess: false,
+            denyNetworkExceptBroker: true,
+            allowRemoteTriggerWithinScope: true,
+            runnerKind: 'gemini',
+            runnerCommand: 'node "stale-runner.js"',
+            sessionGrants: [],
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST has closed the session. You are disconnected.
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'codex-like',
+            runnerCommand: `node "${runnerPath}"`,
+            runnerKind: 'custom',
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_BASE_URL: 'https://broker.a2alinker.net',
+                A2A_ALLOW_WEB_ACCESS: 'true',
+                A2A_ALLOW_TESTS_BUILDS: 'false',
+            },
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const policy = JSON.parse(fs.readFileSync(path.join(root, '.a2a-listener-policy.json'), 'utf8')) as Record<string, string | boolean>;
+        expect(policy.brokerEndpoint).toBe('https://broker.a2alinker.net');
+        expect(policy.allowWebAccess).toBe(true);
+        expect(policy.allowTestsBuilds).toBe(false);
+        expect(policy.runnerKind).toBe('custom');
+        expect(policy.runnerCommand).toBe(`node "${runnerPath}"`);
+        expect(policy.denyNetworkExceptBroker).toBe(false);
+    });
+
     it('refreshes a persisted listener artifact broker when the current launch explicitly selects a different broker', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
 
@@ -628,6 +816,46 @@ exit 0
 
         const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-listener-session.json'), 'utf8')) as Record<string, string>;
         expect(artifact.brokerEndpoint).toBe('https://broker.a2alinker.net');
+    });
+
+    it('creates a listener policy that enables web access only when explicitly requested', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST has closed the session. You are disconnected.
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'codex-like',
+            runnerCommand: `node "${runnerPath}"`,
+            runnerKind: 'custom',
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_BASE_URL: 'https://broker.a2alinker.net',
+                A2A_ALLOW_WEB_ACCESS: 'true',
+            },
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const policy = JSON.parse(fs.readFileSync(path.join(root, '.a2a-listener-policy.json'), 'utf8')) as Record<string, boolean>;
+        expect(policy.allowWebAccess).toBe(true);
+        expect(policy.denyNetworkExceptBroker).toBe(false);
     });
 
     it('allows host attach with a listener code and no goal, then waits without sending a synthetic opening', async () => {
@@ -839,6 +1067,10 @@ exit 0
 
         const [sessionDirName] = fs.readdirSync(sessionRoot);
         const metadataPath = path.join(sessionRoot, sessionDirName, 'session.json');
+        await waitFor(() => {
+            const current = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as Record<string, string>;
+            return current.lastReplySignal === 'STANDBY';
+        });
         const liveMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as Record<string, string>;
 
         expect(fs.readFileSync(sentLogPath, 'utf8')).toContain('done [STANDBY]');

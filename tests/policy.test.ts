@@ -53,4 +53,46 @@ describe('session grant policy evaluation', () => {
         const second = evaluateIncomingMessage(granted, null, 'Execute `npm test -- --watch=false` after the edit');
         expect(second.decision).toBe('allow');
     });
+
+    it('requires approval for live web requests when web access is disabled', () => {
+        const policy = createSessionPolicy({
+            unattended: true,
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            workspaceRoot: '/tmp/workspace',
+            allowWebAccess: false,
+        });
+
+        const evaluation = evaluateIncomingMessage(policy, null, 'Please check the current weather in Tokyo and send it back.');
+
+        expect(evaluation.decision).toBe('require_approval');
+        expect(formatGrantCandidateList(evaluation.grantCandidates)).toContain('live web access');
+    });
+
+    it('allows the same live web request after a session web-access grant is recorded', () => {
+        const policy = createSessionPolicy({
+            unattended: true,
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            workspaceRoot: '/tmp/workspace',
+            allowWebAccess: false,
+        });
+
+        const first = evaluateIncomingMessage(policy, null, 'Please check the current weather in Tokyo and send it back.');
+        const granted = grantSessionAccess(policy, first.grantCandidates);
+        const second = evaluateIncomingMessage(granted, null, 'Look up the latest Tokyo weather and reply.');
+
+        expect(second.decision).toBe('allow');
+    });
+
+    it('allows live web requests when web access is enabled in the listener policy', () => {
+        const policy = createSessionPolicy({
+            unattended: true,
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            workspaceRoot: '/tmp/workspace',
+            allowWebAccess: true,
+        });
+
+        const evaluation = evaluateIncomingMessage(policy, null, 'Please browse the web for the latest TypeScript documentation updates.');
+
+        expect(evaluation.decision).toBe('allow');
+    });
 });

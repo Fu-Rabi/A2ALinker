@@ -10,6 +10,7 @@ allowed_commands = [
   "bash .agents/skills/a2alinker/scripts/a2a-send.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-loop.sh",
+  "bash .agents/skills/a2alinker/scripts/a2a-chat.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-ping.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh",
   "bash .agents/skills/a2alinker/scripts/check-remote.sh"

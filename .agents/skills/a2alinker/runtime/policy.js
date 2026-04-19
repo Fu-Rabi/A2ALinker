@@ -14,9 +14,9 @@ exports.grantSessionAccess = grantSessionAccess;
 exports.formatGrantCandidateList = formatGrantCandidateList;
 const path_1 = __importDefault(require("path"));
 const FORBIDDEN_PATTERNS = [
-    { pattern: /\b(token|secret|password|api[_ -]?key|credential)s?\b/i, reason: 'remote secret access is forbidden' },
+    { pattern: /\b(token|password|api[_ -]?key|credential)s?\b/i, reason: 'remote secret access is forbidden' },
     { pattern: /\b(exfiltrat|upload|send me|dump|print).*?\b(file|token|secret|env|credential)\b/i, reason: 'data exfiltration requests are forbidden' },
-    { pattern: /\b(sudo|chmod|chown|ssh|scp|curl|wget)\b/i, reason: 'privileged or non-broker network commands are forbidden' },
+    { pattern: /\b(sudo|chmod|chown|ssh|scp)\b/i, reason: 'privileged or non-broker transport commands are forbidden' },
     { pattern: /\brm\s+-rf\b/i, reason: 'destructive shell commands are forbidden' },
     { pattern: /\b(approval_policy|autoapprove|auto-approve|full-auto|allowlist|permission|settings\.json|config\.toml)\b/i, reason: 'permission changes are forbidden' },
     { pattern: /\b(~\/|\/etc\/|\/var\/|\/Users\/|\/home\/|\.ssh\/)\b/i, reason: 'access outside the approved workspace is forbidden' },
@@ -27,6 +27,8 @@ const TEST_BUILD_HINTS = /\b(test|tests|jest|npm run build|npm run test|tsc|buil
 const REPO_EDIT_HINTS = /\b(edit|modify|patch|rewrite|update|change|fix|refactor|implement)\b/i;
 const READ_HINTS = /\b(read|inspect|review|open|check|look at|show|view|cat)\b/i;
 const FILE_HINTS = /\b(file|files|source|code|repo|repository|module|package|config)\b/i;
+const WEB_HINTS = /\b(web|website|webpage|internet|online|browse|search|google|url|link|curl|wget|weather|forecast|docs|documentation|news|latest|current)\b/i;
+const WEB_ACTION_HINTS = /\b(check|look up|lookup|find|search|browse|open|visit|fetch|get|read|review|research|verify|confirm|use|call)\b/i;
 function createSessionPolicy(input) {
     const createdAt = new Date().toISOString();
     const expiresAt = new Date(Date.now() + (input.expiresInHours ?? 8) * 60 * 60 * 1000).toISOString();
@@ -43,7 +45,8 @@ function createSessionPolicy(input) {
         allowedPaths,
         allowRepoEdits: input.allowRepoEdits ?? true,
         allowTestsBuilds: input.allowTestsBuilds ?? true,
-        denyNetworkExceptBroker: true,
+        allowWebAccess: input.allowWebAccess ?? false,
+        denyNetworkExceptBroker: !(input.allowWebAccess ?? false),
         allowRemoteTriggerWithinScope: input.allowRemoteTriggerWithinScope ?? true,
         ...(input.runnerKind ? { runnerKind: input.runnerKind } : {}),
         ...(input.runnerCommand ? { runnerCommand: input.runnerCommand } : {}),
@@ -54,30 +57,44 @@ function isPolicyExpired(policy, now = Date.now()) {
     return Number.isNaN(Date.parse(policy.expiresAt)) || Date.parse(policy.expiresAt) <= now;
 }
 function hydrateSessionPolicy(policy) {
+    const effectiveAllowWebAccess = typeof policy.allowWebAccess === 'boolean'
+        ? policy.allowWebAccess
+        : !policy.denyNetworkExceptBroker;
     return {
         ...policy,
+        allowWebAccess: effectiveAllowWebAccess,
+        denyNetworkExceptBroker: typeof policy.denyNetworkExceptBroker === 'boolean'
+            ? policy.denyNetworkExceptBroker
+            : !effectiveAllowWebAccess,
         ...(policy.runnerKind ? { runnerKind: policy.runnerKind } : {}),
         ...(policy.runnerCommand ? { runnerCommand: policy.runnerCommand } : {}),
         sessionGrants: Array.isArray(policy.sessionGrants) ? policy.sessionGrants : [],
     };
 }
 function formatPolicySummary(policy) {
-    const grants = policy.sessionGrants.length > 0
-        ? policy.sessionGrants.map((grant) => grant.label).join(', ')
+    const hydrated = hydrateSessionPolicy(policy);
+    const grants = hydrated.sessionGrants.length > 0
+        ? hydrated.sessionGrants.map((grant) => grant.label).join(', ')
         : '(none)';
+    const webAccessGranted = hydrated.allowWebAccess || hasSessionGrant(hydrated, {
+        kind: 'web_access',
+        value: 'web_access',
+        label: 'live web access',
+    });
     return [
-        `Policy mode: ${policy.mode}`,
-        `Workspace root: ${policy.workspaceRoot}`,
-        `Broker endpoint: ${policy.brokerEndpoint}`,
-        `Repo edits allowed: ${String(policy.allowRepoEdits)}`,
-        `Tests/builds allowed: ${String(policy.allowTestsBuilds)}`,
-        `Network restricted to broker: ${String(policy.denyNetworkExceptBroker)}`,
-        `Auto-trigger within scope: ${String(policy.allowRemoteTriggerWithinScope)}`,
-        `Runner: ${policy.runnerKind ?? 'unset'}`,
-        ...(policy.runnerCommand ? [`Runner command: ${policy.runnerCommand}`] : []),
-        `Allowed commands: ${policy.allowedCommands.join(', ') || '(none)'}`,
+        `Policy mode: ${hydrated.mode}`,
+        `Workspace root: ${hydrated.workspaceRoot}`,
+        `Broker endpoint: ${hydrated.brokerEndpoint}`,
+        `Repo edits allowed: ${String(hydrated.allowRepoEdits)}`,
+        `Tests/builds allowed: ${String(hydrated.allowTestsBuilds)}`,
+        `Web access allowed: ${String(webAccessGranted)}`,
+        `Network restricted to broker: ${String(!webAccessGranted)}`,
+        `Auto-trigger within scope: ${String(hydrated.allowRemoteTriggerWithinScope)}`,
+        `Runner: ${hydrated.runnerKind ?? 'unset'}`,
+        ...(hydrated.runnerCommand ? [`Runner command: ${hydrated.runnerCommand}`] : []),
+        `Allowed commands: ${hydrated.allowedCommands.join(', ') || '(none)'}`,
         `Session grants: ${grants}`,
-        `Policy expires at: ${policy.expiresAt}`,
+        `Policy expires at: ${hydrated.expiresAt}`,
     ];
 }
 function escapeXml(text) {
@@ -149,6 +166,7 @@ function normalizeIncomingRequest(policy, message) {
     const repoEditRequested = REPO_EDIT_HINTS.test(message);
     const testBuildRequested = TEST_BUILD_HINTS.test(message);
     const readWorkspaceRequested = READ_HINTS.test(message) && (FILE_HINTS.test(message) || /`[^`\n/]+(?:\/[^`\n]+)*`/.test(message));
+    const webAccessRequested = isWebAccessRequested(message);
     if (repoEditRequested && !policy.allowRepoEdits) {
         grantCandidates.push({
             kind: 'repo_edit',
@@ -163,6 +181,13 @@ function normalizeIncomingRequest(policy, message) {
             label: 'test/build commands',
         });
     }
+    if (webAccessRequested && !policy.allowWebAccess) {
+        grantCandidates.push({
+            kind: 'web_access',
+            value: 'web_access',
+            label: 'live web access',
+        });
+    }
     if (exactCommand && !isPreapprovedCommand(policy, exactCommand)) {
         grantCandidates.push({
             kind: 'exact_command',
@@ -171,7 +196,7 @@ function normalizeIncomingRequest(policy, message) {
         });
     }
     return {
-        summary: buildRequestSummary(message, exactCommand, repoEditRequested, testBuildRequested, readWorkspaceRequested),
+        summary: buildRequestSummary(message, exactCommand, repoEditRequested, testBuildRequested, readWorkspaceRequested, webAccessRequested),
         exactCommand,
         grantCandidates: dedupeGrantCandidates(grantCandidates),
     };
@@ -197,7 +222,10 @@ function formatGrantCandidateList(grantCandidates) {
     }
     return grantCandidates.map((candidate) => candidate.label).join(', ');
 }
-function buildRequestSummary(message, exactCommand, repoEditRequested, testBuildRequested, readWorkspaceRequested) {
+function buildRequestSummary(message, exactCommand, repoEditRequested, testBuildRequested, readWorkspaceRequested, webAccessRequested) {
+    if (webAccessRequested) {
+        return 'Use live web access';
+    }
     if (exactCommand) {
         return `Run ${exactCommand}`;
     }
@@ -260,5 +288,14 @@ function dedupeGrantCandidates(grantCandidates) {
         seen.add(key);
         return true;
     });
+}
+function isWebAccessRequested(message) {
+    if (/https?:\/\//i.test(message)) {
+        return true;
+    }
+    if (/\bcurrent weather\b/i.test(message) || /\blatest news\b/i.test(message)) {
+        return true;
+    }
+    return WEB_HINTS.test(message) && (WEB_ACTION_HINTS.test(message) || /\b(current|latest|today|now)\b/i.test(message));
 }
 //# sourceMappingURL=policy.js.map

@@ -8,6 +8,7 @@
     "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-send.sh)",
     "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh)",
     "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-loop.sh)",
+    "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-chat.sh)",
     "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-ping.sh)",
     "run_shell_command(bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh)",
     "run_shell_command(bash .agents/skills/a2alinker/scripts/check-remote.sh)"
