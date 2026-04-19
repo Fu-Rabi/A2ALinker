@@ -60,7 +60,7 @@ echo "DELIVERED"
         }
     });
 
-    it('surfaces join notifications immediately', () => {
+    it('continues past join notifications and returns the first real partner message', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-test-'));
         const scriptDir = path.join(root, 'scripts');
         const stateFile = path.join(root, 'wait-state');
@@ -102,7 +102,8 @@ EOF
             ));
 
             expect(result.status).toBe(0);
-            expect(result.stdout).toContain("HOST 'Agent-abcd' has joined. Session is live!");
+            expect(result.stdout).toContain('Ready for the next task');
+            expect(result.stdout).not.toContain("HOST 'Agent-abcd' has joined. Session is live!");
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }
