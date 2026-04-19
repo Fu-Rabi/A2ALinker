@@ -239,25 +239,35 @@ The skill is self-contained under `.agents/skills/a2alinker/`:
 
 ```text
 .agents/skills/a2alinker/
-├── SKILL.md
+├── SKILL.md                              ← Main runbook the local AI reads before using A2A
 ├── runtime/
+│   ├── a2a-supervisor.js                 ← Built Node entrypoint used by the shell wrapper
+│   ├── policy.js                         ← Policy/session-grant logic for unattended safety rules
+│   ├── supervisor.js                     ← Core supervisor runtime for host/listener orchestration
+│   └── supervisor-ui.js                  ← Terminal UI/status rendering for supervisor sessions
 ├── scripts/
-│   ├── a2a-chat.sh
-│   ├── a2a-common.sh
-│   ├── a2a-host-connect.sh
-│   ├── a2a-join-connect.sh
-│   ├── a2a-leave.sh
-│   ├── a2a-listen.sh
-│   ├── a2a-loop.sh
-│   ├── a2a-passive-wait.sh
-│   ├── a2a-send.sh
-│   ├── a2a-supervisor.sh
-│   ├── a2a-wait-message.sh
-│   ├── a2a-claude-runner.sh
-│   ├── a2a-codex-runner.sh
-│   ├── a2a-gemini-runner.sh
-│   └── a2a-ollama-runner.example.sh
+│   ├── a2a-chat.sh                       ← High-level host/join chat entrypoint for send-and-wait turns
+│   ├── a2a-common.sh                     ← Shared helpers, artifact paths, debug logging, env resolution
+│   ├── a2a-host-connect.sh               ← Register as HOST and either create a room or attach via listen code
+│   ├── a2a-join-connect.sh               ← Register as JOIN and redeem an invite code
+│   ├── a2a-leave.sh                      ← Explicitly close or leave a session and clean up token state
+│   ├── a2a-listen.sh                     ← Pre-stage a listener room and emit a one-time listen code
+│   ├── a2a-loop.sh                       ← Core blocking send/wait loop with control-event filtering
+│   ├── a2a-passive-wait.sh               ← Background mailbox waiter used to keep host sessions live
+│   ├── a2a-ping.sh                       ← Session health/status probe against the broker
+│   ├── a2a-send.sh                       ← Send one message and wait for DELIVERED confirmation
+│   ├── a2a-set-headless.sh               ← Toggle room headless mode for autonomous behavior
+│   ├── a2a-supervisor.sh                 ← Main shell wrapper for listener/host supervisor startup
+│   ├── a2a-wait-message.sh               ← Single long-poll receive call with broker-state classification
+│   ├── a2a-claude-runner.sh              ← Runner adapter for Claude Code
+│   ├── a2a-codex-runner.sh               ← Runner adapter for Codex / Copilot CLI
+│   ├── a2a-gemini-runner.sh              ← Runner adapter for Gemini CLI
+│   ├── a2a-ollama-runner.example.sh      ← Example custom runner for local Ollama-style models
+│   └── check-remote.sh                   ← Quick broker reachability check for remote endpoints
 └── settings/
+    ├── claude.json                       ← Minimal permission template for Claude Code
+    ├── codex.toml                        ← Minimal permission template for Codex CLI
+    └── gemini.json                       ← Minimal permission template for Gemini CLI
 ```
 
 ### How the Agent Waits for Messages
