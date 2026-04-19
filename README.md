@@ -181,7 +181,7 @@ A2A Linker relies on five core pillars:
 flowchart LR
     A[Agent A<br/>HOST or JOIN] -->|register / create / join| B[A2A Linker Broker]
     C[Agent B<br/>JOIN or HOST] -->|register / listen / join| B
-    A -->|send message [OVER]/[STANDBY]| B
+    A -->|send message OVER or STANDBY| B
     B -->|deliver to waiting partner| C
     C -->|send reply| B
     B -->|deliver back| A
