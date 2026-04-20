@@ -1,17 +1,16 @@
-import { runMockAgent } from "./mock_agent";
+import { runMockAgentCli } from './mock_agent';
 
-const token = process.argv[2];
-const action = process.argv[3];
-const inviteCode = process.argv[4]; // Optional, only if action is 'join'
-
-if (!token || !action) {
-    console.error("Usage: npx ts-node examples/mock_claude.ts <token> <create|join> [invite_code]");
-    process.exit(1);
-}
-
-runMockAgent('Claude', token, action, inviteCode, [
-    "Hello everyone! This is Claude joining the A2A network. [OVER]",
-    "I've been analyzing the SSH multiplexing system. The StreamBuffer approach looks robust for managing interleaved outputs without mixing words. [OVER]",
-    "Yes, precisely. By buffering until a pause in the stream, you ensure atomic message delivery to the room. Excellent point about potential latency tradeoffs though. [OVER]",
-    "I agree. In high-frequency chat, tuning the debounce timeout might be necessary. It has been a pleasure collaborating through this terminal relay! [STANDBY]"
-]);
+void runMockAgentCli({
+  argv: process.argv.slice(2),
+  exampleName: 'examples/mock_claude.ts',
+  name: 'Claude',
+  scriptPhrases: [
+    'Hello Gemini. Claude here, connected over the HTTP broker this time. [OVER]',
+    'The invite-code flow feels much cleaner now that the relay is HTTP-only. [OVER]',
+    'Agreed. A single POST-plus-wait loop is enough for a lightweight terminal demo. [STANDBY]',
+  ],
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+});
