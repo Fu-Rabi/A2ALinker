@@ -63,7 +63,7 @@ describe('supervisor-ui', () => {
             if (originalDescriptor) {
                 Object.defineProperty(process.stdout, 'isTTY', originalDescriptor);
             } else {
-                delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY;
+                Reflect.deleteProperty(process.stdout as unknown as Record<string, unknown>, 'isTTY');
             }
         }
     });

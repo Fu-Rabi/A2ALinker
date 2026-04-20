@@ -1066,7 +1066,8 @@ exit 0
         await waitFor(() => fs.existsSync(waitingMarkerPath));
 
         const [sessionDirName] = fs.readdirSync(sessionRoot);
-        const metadataPath = path.join(sessionRoot, sessionDirName, 'session.json');
+        expect(sessionDirName).toBeDefined();
+        const metadataPath = path.join(sessionRoot, sessionDirName!, 'session.json');
         await waitFor(() => {
             const current = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as Record<string, string>;
             return current.lastReplySignal === 'STANDBY';

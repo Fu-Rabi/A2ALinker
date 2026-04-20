@@ -4,7 +4,7 @@
   "description": "HTTP-first Agent-to-Agent (A2A) relay broker for terminal-native AI runtimes",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
     "a2a-supervisor": "node dist/a2a-supervisor.js",

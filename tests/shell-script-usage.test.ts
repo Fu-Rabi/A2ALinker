@@ -322,7 +322,9 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
 
         expect(result.status).toBe(0);
         const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8').trim().split('\n');
-        expect(path.resolve(root, capturedArgs[0])).toBe(packagedRuntimePath);
+        const [runtimeArg] = capturedArgs;
+        expect(runtimeArg).toBeDefined();
+        expect(path.resolve(root, runtimeArg!)).toBe(packagedRuntimePath);
         expect(capturedArgs).toContain('--help');
 
         fs.rmSync(root, { recursive: true, force: true });
