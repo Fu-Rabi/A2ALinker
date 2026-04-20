@@ -128,4 +128,37 @@ printf 'claude:%s\n' "$*" > "${responseFile}"
         expect(result.status).toBe(0);
         expect(fs.readFileSync(responseFile, 'utf8')).toContain('Claude prompt.');
     });
+
+    it('writes the supervisor response file through ollama (example runner)', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-ollama-runner-'));
+        const binDir = path.join(root, 'bin');
+        const promptFile = path.join(root, 'prompt.txt');
+        const responseFile = path.join(root, 'response.txt');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(promptFile, 'Ollama prompt.', 'utf8');
+        fs.writeFileSync(responseFile, '', 'utf8');
+
+        writeExecutable(path.join(binDir, 'ollama'), `#!/bin/bash
+cat > "${responseFile}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-ollama-runner.example.sh'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_SUPERVISOR_PROMPT_FILE: promptFile,
+                    A2A_SUPERVISOR_RESPONSE_FILE: responseFile,
+                    A2A_SUPERVISOR_WORKDIR: process.cwd(),
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(fs.readFileSync(responseFile, 'utf8')).toContain('Ollama prompt.');
+    });
 });

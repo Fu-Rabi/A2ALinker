@@ -25,13 +25,7 @@ case "$INVITE" in
 esac
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
-if [ -f /tmp/a2a_join_token ]; then
-  OLD_TOKEN=$(cat /tmp/a2a_join_token)
-  if [ -n "$OLD_TOKEN" ]; then
-    (curl -s --max-time 5 -X POST "$BASE_URL/leave" -H "Authorization: Bearer $OLD_TOKEN" > /dev/null 2>&1 &)
-  fi
-  rm -f /tmp/a2a_join_token
-fi
+a2a_cleanup_stale_join_token "$BASE_URL"
 
 # One-shot setup: register + join room in 1 round-trip
 RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/register-and-join/$INVITE")

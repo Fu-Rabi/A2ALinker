@@ -51,7 +51,7 @@ if [ -n "$ARTIFACT_PATH" ] && [ -f "$ARTIFACT_PATH" ]; then
 fi
 
 if [ -z "$TOKEN" ]; then
-  TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
+  TOKEN=$(a2a_read_primary_token "$ROLE" 2>/dev/null || true)
 fi
 
 if [ -z "$TOKEN" ]; then

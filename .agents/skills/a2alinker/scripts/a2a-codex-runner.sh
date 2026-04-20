@@ -5,24 +5,9 @@
 
 set -euo pipefail
 
-PROMPT_FILE="${A2A_SUPERVISOR_PROMPT_FILE:-}"
-RESPONSE_FILE="${A2A_SUPERVISOR_RESPONSE_FILE:-}"
-WORKDIR="${A2A_SUPERVISOR_WORKDIR:-$PWD}"
-
-if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
-  echo "ERROR: A2A_SUPERVISOR_PROMPT_FILE is missing or unreadable."
-  exit 1
-fi
-
-if [ -z "$RESPONSE_FILE" ]; then
-  echo "ERROR: A2A_SUPERVISOR_RESPONSE_FILE is not set."
-  exit 1
-fi
-
-if ! command -v codex >/dev/null 2>&1; then
-  echo "ERROR: codex executable not found in PATH."
-  exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/a2a-common.sh"
+a2a_validate_runner_env codex
 
 codex exec \
   --skip-git-repo-check \

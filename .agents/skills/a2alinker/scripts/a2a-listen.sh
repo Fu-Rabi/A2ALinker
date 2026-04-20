@@ -11,14 +11,10 @@ a2a_prompt_for_debug_if_interactive
 BASE_URL="$(a2a_resolve_base_url)"
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
-if [ -f /tmp/a2a_join_token ]; then
-  OLD_TOKEN=$(cat /tmp/a2a_join_token)
-  if [ -n "$OLD_TOKEN" ]; then
-    a2a_debug_log "join" "listen:cleanup old_token_present=1"
-    (curl -s --max-time 5 -X POST "$BASE_URL/leave" -H "Authorization: Bearer $OLD_TOKEN" > /dev/null 2>&1 &)
-  fi
-  rm -f /tmp/a2a_join_token
+if [ -f /tmp/a2a_join_token ] && [ -s /tmp/a2a_join_token ]; then
+  a2a_debug_log "join" "listen:cleanup old_token_present=1"
 fi
+a2a_cleanup_stale_join_token "$BASE_URL"
 
 HEADLESS="${1:-false}"
 a2a_debug_log "join" "listen:start headless=$HEADLESS base_url=$BASE_URL"

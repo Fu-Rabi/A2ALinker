@@ -40,16 +40,15 @@ if [ -z "$MESSAGE" ]; then
   exit 1
 fi
 
-if [ ! -f "$TOKEN_FILE" ]; then
-  echo "ERROR: Token file not found at $TOKEN_FILE. Run the connect script first."
+TOKEN=$(a2a_read_primary_token "$ROLE") || {
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    echo "ERROR: Token file not found at $TOKEN_FILE. Run the connect script first."
+  else
+    echo "ERROR: Token file is empty. Run the connect script first."
+  fi
   exit 1
-fi
-
-TOKEN=$(cat "$TOKEN_FILE")
-if [ -z "$TOKEN" ]; then
-  echo "ERROR: Token file is empty. Run the connect script first."
-  exit 1
-fi
+}
 
 # Write message to temp file to handle large content/special characters safely
 TMPFILE=$(mktemp)

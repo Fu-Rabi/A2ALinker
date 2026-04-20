@@ -243,3 +243,66 @@ a2a_debug_log() {
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   printf '%s [%s] pid=%s %s\n' "$timestamp" "$role" "$$" "$*" >> "$log_path"
 }
+
+# Sets PROMPT_FILE, RESPONSE_FILE, WORKDIR in the caller's shell context.
+# Optionally checks that a required executable is in PATH ($1).
+# Exits with an error message on validation failure.
+a2a_validate_runner_env() {
+  local required_bin="${1:-}"
+
+  if [ -z "${A2A_SUPERVISOR_PROMPT_FILE:-}" ] || [ ! -f "${A2A_SUPERVISOR_PROMPT_FILE}" ]; then
+    echo "ERROR: A2A_SUPERVISOR_PROMPT_FILE is missing or unreadable."
+    exit 1
+  fi
+
+  if [ -z "${A2A_SUPERVISOR_RESPONSE_FILE:-}" ]; then
+    echo "ERROR: A2A_SUPERVISOR_RESPONSE_FILE is not set."
+    exit 1
+  fi
+
+  if [ -n "$required_bin" ] && ! command -v "$required_bin" >/dev/null 2>&1; then
+    echo "ERROR: $required_bin executable not found in PATH."
+    exit 1
+  fi
+
+  PROMPT_FILE="$A2A_SUPERVISOR_PROMPT_FILE"
+  RESPONSE_FILE="$A2A_SUPERVISOR_RESPONSE_FILE"
+  WORKDIR="${A2A_SUPERVISOR_WORKDIR:-$PWD}"
+}
+
+# Reads the primary /tmp token for the given (already-normalized) role.
+# Exit 0: token found and non-empty; prints token.
+# Exit 1: token file does not exist.
+# Exit 2: token file exists but is empty.
+a2a_read_primary_token() {
+  local role="$1"
+  local token_file="/tmp/a2a_${role}_token"
+  if [ ! -f "$token_file" ]; then
+    return 1
+  fi
+  local token
+  token=$(cat "$token_file")
+  if [ -z "$token" ]; then
+    return 2
+  fi
+  printf '%s\n' "$token"
+  return 0
+}
+
+# Cleans up a stale /tmp/a2a_join_token. Takes the broker URL as $1.
+# If the file exists and is non-empty: posts /leave asynchronously, then removes it.
+# If the file exists but is empty: removes it, skips /leave.
+# If absent: no-op.
+a2a_cleanup_stale_join_token() {
+  local base_url="$1"
+  local token_file="/tmp/a2a_join_token"
+  if [ ! -f "$token_file" ]; then
+    return 0
+  fi
+  local old_token
+  old_token=$(cat "$token_file")
+  if [ -n "$old_token" ]; then
+    (curl -s --max-time 5 -X POST "$base_url/leave" -H "Authorization: Bearer $old_token" > /dev/null 2>&1 &)
+  fi
+  rm -f "$token_file"
+}

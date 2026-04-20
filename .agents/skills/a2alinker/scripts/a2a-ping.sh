@@ -10,11 +10,10 @@ BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 
-TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
-if [ -z "$TOKEN" ]; then
+TOKEN=$(a2a_read_primary_token "$ROLE") || {
   echo "PING_ERROR: No token found at $TOKEN_FILE"
   exit 1
-fi
+}
 
 RESP=$(curl --max-time 5 -s -w '\n%{http_code}' \
   "$BASE_URL/ping" \

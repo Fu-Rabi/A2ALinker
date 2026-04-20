@@ -12,11 +12,10 @@ ROLE="${1:-host}"
 HEADLESS="${2:-false}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 
-TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
-if [ -z "$TOKEN" ]; then
+TOKEN=$(a2a_read_primary_token "$ROLE") || {
   echo "ERROR: No token found at $TOKEN_FILE"
   exit 1
-fi
+}
 
 RESP=$(curl --max-time 10 -s -X POST "$BASE_URL/room-rule/headless" \
   -H "Authorization: Bearer $TOKEN" \

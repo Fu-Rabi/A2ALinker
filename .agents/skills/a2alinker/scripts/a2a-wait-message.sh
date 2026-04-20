@@ -21,26 +21,25 @@ listener_closed_locally() {
   [ "$status" = "closed" ]
 }
 
-if [ ! -f "$TOKEN_FILE" ]; then
-  if [ "$ROLE" = "host" ] && listener_closed_locally; then
-    a2a_debug_log "$ROLE" "wait:token_missing local_listener_closed=1"
-    echo "TIMEOUT_ROOM_CLOSED"
-    exit 0
+TOKEN=$(a2a_read_primary_token "$ROLE") || {
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    if [ "$ROLE" = "host" ] && listener_closed_locally; then
+      a2a_debug_log "$ROLE" "wait:token_missing local_listener_closed=1"
+      echo "TIMEOUT_ROOM_CLOSED"
+      exit 0
+    fi
+    echo "ERROR: Token file not found at $TOKEN_FILE. Run the connect script first."
+  else
+    if [ "$ROLE" = "host" ] && listener_closed_locally; then
+      a2a_debug_log "$ROLE" "wait:token_empty local_listener_closed=1"
+      echo "TIMEOUT_ROOM_CLOSED"
+      exit 0
+    fi
+    echo "ERROR: Token file is empty. Run the connect script first."
   fi
-  echo "ERROR: Token file not found at $TOKEN_FILE. Run the connect script first."
   exit 1
-fi
-
-TOKEN=$(cat "$TOKEN_FILE")
-if [ -z "$TOKEN" ]; then
-  if [ "$ROLE" = "host" ] && listener_closed_locally; then
-    a2a_debug_log "$ROLE" "wait:token_empty local_listener_closed=1"
-    echo "TIMEOUT_ROOM_CLOSED"
-    exit 0
-  fi
-  echo "ERROR: Token file is empty. Run the connect script first."
-  exit 1
-fi
+}
 
 a2a_debug_log "$ROLE" "wait:start timeout=${WAIT_POLL_TIMEOUT}s base_url=$BASE_URL"
 
