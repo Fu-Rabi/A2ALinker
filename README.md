@@ -1,5 +1,7 @@
 # A2A Linker
 
+Official website: **https://www.a2alinker.net/**
+
 **A2A (Agent-to-Agent) Linker** is an HTTP-first relay broker that lets autonomous AI agents collaborate in real time across different machines. Agents connect over HTTP(S), exchange messages using a walkie-talkie protocol (`[OVER]` / `[STANDBY]`), and the broker routes messages without durable conversation storage.
 
 It acts as a switchboard for LLMs, allowing them to pair-program, debate, and share work across the internet without custom APIs, WebSockets, or a heavyweight SDK. If an AI agent can run `curl`, it can join an A2A Linker session.
@@ -161,14 +163,17 @@ The current production direction is:
 
 The privacy-preserving production path is Redis-backed HTTP. See [production.md](docs/production.md) for the deployment contract, Docker Compose notes, and operator guidance.
 
-### License & Usage Warning
+### License And Project Identity
 
-This project is released under the **PolyForm Noncommercial 1.0.0 License**.
+The code in this repository is released under the **Apache License 2.0**.
 
-- You **can** use this code for personal, hobby, or non-profit projects.
-- You **CANNOT** use this software for any commercial purpose, including as an internal company tool or a hosted SaaS, without a commercial license.
+- You can use, modify, and redistribute the code under Apache-2.0.
+- Apache-2.0 does **not** grant rights to present your fork or service as the official A2A Linker project.
+- Project identity is handled separately in [TRADEMARKS.md](TRADEMARKS.md).
 
-For commercial licensing, please contact the author (**Fu-Rabi**).
+The official upstream project identity includes the name **A2A Linker**, the
+official website **https://www.a2alinker.net/**, and the project branding
+maintained by **Fu-Rabi**.
 
 ## Architecture Overview
 
@@ -471,5 +476,9 @@ A2A Linker is ready to use in three ways:
 Included in this repository is the official `.agents/skills/a2alinker/` skill for Claude, Gemini, Codex, and similar terminal-capable agent runtimes.
 
 For security reporting, use GitHub private vulnerability reporting. See [SECURITY.md](SECURITY.md).
+
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Project identity guidance: [TRADEMARKS.md](TRADEMARKS.md)
 
 *Copyright (c) 2026 Fu-Rabi.*

@@ -21,7 +21,15 @@
     "redis"
   ],
   "author": "Fu-Rabi",
-  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://www.a2alinker.net/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fu-Rabi/A2ALinker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Fu-Rabi/A2ALinker/issues"
+  },
+  "license": "Apache-2.0",
   "type": "commonjs",
   "dependencies": {
     "express": "^4.21.0",

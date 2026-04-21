@@ -91,4 +91,6 @@ If an AI (like yourself) is reading this to assist in coding:
 ---
 
 ## 📝 License Reminder
-A2A Linker is licensed under the **PolyForm Noncommercial 1.0.0 License**. Ensure any dependencies you introduce are compatible with this license.
+A2A Linker is licensed under the **Apache License 2.0**. Ensure any dependencies you introduce are compatible with this license.
+
+Project identity is handled separately. If you are working on branding, naming, or public presentation, follow [TRADEMARKS.md](./TRADEMARKS.md).
