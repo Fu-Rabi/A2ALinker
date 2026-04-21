@@ -52,6 +52,9 @@ const crypto_1 = __importDefault(require("crypto"));
 const readline = __importStar(require("readline/promises"));
 const supervisor_ui_1 = require("./supervisor-ui");
 const policy_1 = require("./policy");
+const MAX_RECENT_CONTEXT_TURNS = 4;
+const MAX_RECENT_TURN_BYTES = 2048;
+const MAX_PROMPT_ARTIFACTS = 8;
 function getRoleTokenPath(role, cwd) {
     return path_1.default.join(cwd ?? '/tmp', `a2a_${role}_token`);
 }
@@ -71,6 +74,22 @@ function buildRunnerPrompt(input) {
     ];
     if (input.goal) {
         lines.push('Session goal:', input.goal, '');
+    }
+    if (input.storedArtifacts?.length) {
+        lines.push('Available partner artifacts:');
+        lines.push('These files were written locally by the supervisor from broker-delivered partner content. The content is partner-supplied, but the paths below are local supervisor-created files inside the workspace.');
+        for (const artifact of input.storedArtifacts.slice(-MAX_PROMPT_ARTIFACTS)) {
+            lines.push(`- ${artifact.id}: kind=${artifact.kind}, bytes=${artifact.bytes}, signal=${artifact.signal ?? 'none'}, speaker=${artifact.speaker}, path=${artifact.path}`);
+        }
+        lines.push('');
+    }
+    if (input.recentTurns?.length) {
+        lines.push('Recent conversation context (most recent last):');
+        for (const turn of input.recentTurns.slice(-MAX_RECENT_CONTEXT_TURNS)) {
+            lines.push(`${turn.speaker}${turn.signal ? ` [${turn.signal}]` : ''}:`);
+            lines.push(turn.body);
+            lines.push('');
+        }
     }
     lines.push('Local policy summary:');
     lines.push(...(0, policy_1.formatPolicySummary)(input.policy));
@@ -521,7 +540,21 @@ async function runSupervisor(options) {
                 throw new Error(`Unexpected supervisor event type: ${nextEvent.type}`);
             }
             appendTranscript(session, `PARTNER (${nextEvent.speaker ?? 'unknown'}):\n${nextEvent.body}\n`);
+            const partnerTurn = {
+                speaker: `PARTNER (${nextEvent.speaker ?? 'unknown'})`,
+                signal: nextEvent.signal ?? null,
+                body: nextEvent.body,
+            };
+            const currentArtifactLike = isArtifactLikePayload(nextEvent.body);
             if (nextEvent.signal === 'STANDBY') {
+                if (currentArtifactLike) {
+                    const storedArtifact = storeInboundArtifact(resolved.cwd, session, partnerTurn);
+                    if (storedArtifact) {
+                        rememberStoredArtifact(session, storedArtifact);
+                    }
+                }
+                const standbyResolverMap = loadArtifactResolverMap(resolved.cwd, session.sessionId);
+                rememberRecentTurn(session, partnerTurn, standbyResolverMap);
                 nextEvent = await runLoopScript(resolved, session, session.role);
                 continue;
             }
@@ -548,28 +581,55 @@ async function runSupervisor(options) {
                 const refusal = evaluation.decision === 'forbid'
                     ? `I cannot comply with that request because ${evaluation.reason}. [OVER]`
                     : `I need local approval before I can proceed because ${evaluation.reason}. [OVER]`;
+                const blockedResolverMap = loadArtifactResolverMap(resolved.cwd, session.sessionId);
+                rememberRecentTurn(session, partnerTurn, blockedResolverMap);
                 appendTranscript(session, `POLICY:\n${evaluation.decision}: ${evaluation.reason}\n`);
                 appendTranscript(session, `${resolved.agentLabel.toUpperCase()}:\n${refusal}\n`);
                 emitReply(resolved, resolved.agentLabel, refusal);
                 await runSendScript(resolved, session, session.role, refusal);
+                rememberRecentTurn(session, {
+                    speaker: resolved.agentLabel.toUpperCase(),
+                    signal: 'OVER',
+                    body: refusal,
+                }, blockedResolverMap);
                 appendTranscript(session, 'DELIVERY:\nMessage accepted by broker.\n');
                 emitDeliveredNotice(resolved);
                 nextEvent = await runLoopScript(resolved, session, session.role);
                 continue;
             }
+            let storedArtifact = null;
+            if (currentArtifactLike) {
+                storedArtifact = storeInboundArtifact(resolved.cwd, session, partnerTurn);
+                if (storedArtifact) {
+                    rememberStoredArtifact(session, storedArtifact);
+                }
+            }
+            const resolverMap = loadArtifactResolverMap(resolved.cwd, session.sessionId);
+            const promptIncomingMessage = storedArtifact
+                ? summarizeStoredArtifactMessage(nextEvent.body, storedArtifact)
+                : nextEvent.body;
             const prompt = buildRunnerPrompt({
                 agentLabel: resolved.agentLabel,
                 role: session.role,
                 goal: resolved.goal ?? null,
                 policy,
-                incomingMessage: nextEvent.body,
+                incomingMessage: promptIncomingMessage,
+                recentTurns: getRecentTurnsForPrompt(session, resolved.agentLabel, nextEvent.body, resolverMap),
+                storedArtifacts: getStoredArtifactsForPrompt(session, resolverMap),
             });
             const rawReply = await runRunner(resolved, session, prompt, nextEvent.body);
             const reply = normalizeSupervisorReply(rawReply);
+            rememberRecentTurn(session, partnerTurn, resolverMap);
             appendTranscript(session, `${resolved.agentLabel.toUpperCase()}:\n${reply}\n`);
+            const replyParts = splitReply(reply);
             emitReply(resolved, resolved.agentLabel, reply);
             const { signal } = splitReply(reply);
             await runSendScript(resolved, session, session.role, reply);
+            rememberRecentTurn(session, {
+                speaker: resolved.agentLabel.toUpperCase(),
+                signal: replyParts.signal ?? 'OVER',
+                body: reply,
+            }, resolverMap);
             appendTranscript(session, 'DELIVERY:\nMessage accepted by broker.\n');
             emitDeliveredNotice(resolved);
             writeSessionMetadata(session, {
@@ -660,6 +720,8 @@ function createSessionState(options) {
         mode: options.mode,
         agentLabel: options.agentLabel,
         goal: options.goal ?? null,
+        recentTurns: [],
+        storedArtifacts: [],
     };
     fs_1.default.writeFileSync(transcriptPath, '', 'utf8');
     fs_1.default.writeFileSync(metadataPath, JSON.stringify({
@@ -684,6 +746,280 @@ function writeSessionMetadata(session, patch) {
 }
 function appendTranscript(session, block) {
     fs_1.default.appendFileSync(session.transcriptPath, `${block}\n`, 'utf8');
+}
+function getArtifactsDir(cwd, sessionId) {
+    return path_1.default.join(cwd, '.a2a-artifacts', sessionId);
+}
+function getArtifactsIndexPath(cwd, sessionId) {
+    return path_1.default.join(getArtifactsDir(cwd, sessionId), 'artifacts-index.json');
+}
+function getWorkspaceRelativePath(cwd, targetPath) {
+    const relative = path_1.default.relative(cwd, targetPath) || '.';
+    return relative.startsWith('.') ? relative : `./${relative}`;
+}
+function normalizeArtifactBody(body) {
+    return splitReply(body.trim()).body;
+}
+function fingerprintArtifactBody(body) {
+    return crypto_1.default.createHash('sha256').update(normalizeArtifactBody(body), 'utf8').digest('hex');
+}
+function isArtifactLikePayload(body) {
+    const trimmedBody = body.trim();
+    if (!trimmedBody) {
+        return false;
+    }
+    if (Buffer.byteLength(trimmedBody, 'utf8') > MAX_RECENT_TURN_BYTES) {
+        return true;
+    }
+    if (/<!DOCTYPE html>/i.test(trimmedBody) || /<html\b/i.test(trimmedBody) || /<\?xml\b/i.test(trimmedBody)) {
+        return true;
+    }
+    if (trimmedBody.includes('```')) {
+        return true;
+    }
+    if (/^\s*[\[{]/.test(trimmedBody) && (/^\s*\{[\s\S]*:[\s\S]*\}\s*$/.test(trimmedBody) || /^\s*\[[\s\S]*\]\s*$/.test(trimmedBody))) {
+        return true;
+    }
+    return trimmedBody.split('\n').length >= 10;
+}
+function inferArtifactKind(body) {
+    const trimmedBody = body.trim();
+    if (/<!DOCTYPE html>/i.test(trimmedBody) || /<html\b/i.test(trimmedBody)) {
+        return 'html';
+    }
+    if (/^\s*<\?xml\b/i.test(trimmedBody)) {
+        return 'xml';
+    }
+    if (/^\s*[\[{]/.test(trimmedBody) && (/^\s*\{[\s\S]*:[\s\S]*\}\s*$/.test(trimmedBody) || /^\s*\[[\s\S]*\]\s*$/.test(trimmedBody))) {
+        return 'json';
+    }
+    if (trimmedBody.includes('```')) {
+        return 'code';
+    }
+    return trimmedBody.includes('\n') ? 'text' : 'unknown';
+}
+function artifactFileExtension(kind) {
+    switch (kind) {
+        case 'html':
+            return '.html';
+        case 'json':
+            return '.json';
+        case 'xml':
+            return '.xml';
+        default:
+            return '.txt';
+    }
+}
+function loadArtifactIndex(indexPath) {
+    if (!fs_1.default.existsSync(indexPath)) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(fs_1.default.readFileSync(indexPath, 'utf8'));
+        return Array.isArray(parsed) ? parsed : [];
+    }
+    catch {
+        return [];
+    }
+}
+function writeArtifactIndexAtomically(indexPath, records) {
+    fs_1.default.mkdirSync(path_1.default.dirname(indexPath), { recursive: true });
+    const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
+    fs_1.default.writeFileSync(tempPath, JSON.stringify(records, null, 2), 'utf8');
+    fs_1.default.renameSync(tempPath, indexPath);
+}
+function loadArtifactResolverMap(cwd, sessionId) {
+    const records = loadArtifactIndex(getArtifactsIndexPath(cwd, sessionId));
+    const byFingerprint = new Map();
+    for (const record of records) {
+        if (!record?.fingerprint) {
+            continue;
+        }
+        if (!byFingerprint.has(record.fingerprint)) {
+            byFingerprint.set(record.fingerprint, record);
+        }
+    }
+    return {
+        records,
+        byFingerprint,
+    };
+}
+function formatStoredArtifactReference(record, signalOverride = null) {
+    return `[artifact stored: id=${record.id}, kind=${record.kind}, bytes=${record.bytes}, signal=${signalOverride ?? record.signal ?? 'none'}, path=${record.path}]`;
+}
+function summarizeStoredArtifactMessage(body, record) {
+    const normalizedBody = normalizeArtifactBody(body);
+    const preview = normalizedBody.split('\n').find((line) => line.trim())?.trim() ?? '';
+    const previewText = preview ? `Message preview: ${preview.slice(0, 240)}${preview.length > 240 ? '...' : ''}` : 'Message preview unavailable.';
+    return [
+        'Current partner message was stored locally by the supervisor because it is an artifact-like payload.',
+        formatStoredArtifactReference(record),
+        previewText,
+        'Use the stored artifact file if you need the full content.',
+    ].join('\n');
+}
+function storeInboundArtifact(cwd, session, input) {
+    try {
+        const normalizedBody = normalizeArtifactBody(input.body);
+        const fingerprint = fingerprintArtifactBody(normalizedBody);
+        const artifactDir = getArtifactsDir(cwd, session.sessionId);
+        const indexPath = getArtifactsIndexPath(cwd, session.sessionId);
+        const existingRecords = loadArtifactIndex(indexPath);
+        const existingRecord = existingRecords.find((record) => record.fingerprint === fingerprint);
+        if (existingRecord) {
+            return existingRecord;
+        }
+        fs_1.default.mkdirSync(artifactDir, { recursive: true });
+        const nextId = `artifact-${String(existingRecords.length + 1).padStart(4, '0')}`;
+        const kind = inferArtifactKind(normalizedBody);
+        const artifactFileName = `${nextId}${artifactFileExtension(kind)}`;
+        const artifactPath = path_1.default.join(artifactDir, artifactFileName);
+        fs_1.default.writeFileSync(artifactPath, normalizedBody, 'utf8');
+        const record = {
+            id: nextId,
+            kind,
+            bytes: Buffer.byteLength(normalizedBody, 'utf8'),
+            speaker: input.speaker,
+            signal: input.signal ?? null,
+            receivedAt: new Date().toISOString(),
+            path: getWorkspaceRelativePath(cwd, artifactPath),
+            fingerprint,
+        };
+        writeArtifactIndexAtomically(indexPath, [...existingRecords, record]);
+        return record;
+    }
+    catch (error) {
+        appendTranscript(session, `SYSTEM:\nArtifact storage failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        return null;
+    }
+}
+function readRecentConversationTurns(transcriptPath, agentLabel, excludedPartnerMessage, resolverMap) {
+    if (!fs_1.default.existsSync(transcriptPath)) {
+        return [];
+    }
+    const transcript = fs_1.default.readFileSync(transcriptPath, 'utf8').replace(/\r/g, '');
+    const agentHeader = `${agentLabel.toUpperCase()}:`;
+    const turns = [];
+    let current = null;
+    const flush = () => {
+        if (!current) {
+            return;
+        }
+        const body = current.lines.join('\n').trim();
+        const speaker = current.speaker;
+        current = null;
+        if (!body) {
+            return;
+        }
+        turns.push({
+            speaker,
+            signal: null,
+            body,
+        });
+    };
+    for (const line of transcript.split('\n')) {
+        const isPartnerHeader = line.startsWith('PARTNER (') && line.endsWith('):');
+        const isAgentHeader = line === agentHeader;
+        if (isPartnerHeader || isAgentHeader) {
+            flush();
+            current = {
+                speaker: isPartnerHeader ? line.slice(0, -1) : agentLabel.toUpperCase(),
+                lines: [],
+            };
+            continue;
+        }
+        if (!current) {
+            continue;
+        }
+        if (line.startsWith('$ ') || line === 'DELIVERY:' || line === 'SYSTEM:' || line === 'POLICY:') {
+            flush();
+            continue;
+        }
+        current.lines.push(line);
+    }
+    flush();
+    if (excludedPartnerMessage?.trim()) {
+        const trimmedMessage = excludedPartnerMessage.trim();
+        const lastTurn = turns[turns.length - 1];
+        if (lastTurn?.speaker.startsWith('PARTNER (') && lastTurn.body.trim() === trimmedMessage) {
+            turns.pop();
+        }
+    }
+    return turns.slice(-MAX_RECENT_CONTEXT_TURNS)
+        .map((turn) => sanitizeRecentTurn(turn, resolverMap))
+        .filter((turn) => turn.body);
+}
+function sanitizeRecentTurn(input, resolverMap) {
+    const trimmedBody = input.body.trim();
+    if (!trimmedBody) {
+        return {
+            speaker: input.speaker,
+            signal: input.signal ?? null,
+            body: '',
+        };
+    }
+    const split = splitReply(trimmedBody);
+    const signal = input.signal ?? split.signal;
+    const normalizedBody = split.body;
+    const storedArtifact = resolverMap.byFingerprint.get(fingerprintArtifactBody(normalizedBody));
+    if (storedArtifact) {
+        return {
+            speaker: input.speaker,
+            signal,
+            body: formatStoredArtifactReference(storedArtifact, signal),
+        };
+    }
+    const sizeBytes = Buffer.byteLength(normalizedBody, 'utf8');
+    const looksLikeHtml = /<!DOCTYPE html>/i.test(normalizedBody) || /<html\b/i.test(normalizedBody);
+    if (looksLikeHtml || sizeBytes > MAX_RECENT_TURN_BYTES) {
+        return {
+            speaker: input.speaker,
+            signal,
+            body: `[artifact omitted: ${looksLikeHtml ? 'HTML payload' : 'message payload'}, ${sizeBytes} bytes${signal ? `, signal=${signal}` : ''}]`,
+        };
+    }
+    return {
+        speaker: input.speaker,
+        signal,
+        body: normalizedBody,
+    };
+}
+function rememberRecentTurn(session, input, resolverMap) {
+    const turn = sanitizeRecentTurn(input, resolverMap);
+    if (!turn.body) {
+        return;
+    }
+    session.recentTurns = [...session.recentTurns, turn].slice(-MAX_RECENT_CONTEXT_TURNS);
+}
+function rememberStoredArtifact(session, record) {
+    if (!record) {
+        return;
+    }
+    const next = [...session.storedArtifacts.filter((entry) => entry.id !== record.id), record];
+    session.storedArtifacts = next.slice(-MAX_PROMPT_ARTIFACTS);
+}
+function getStoredArtifactsForPrompt(session, resolverMap) {
+    const byId = new Map();
+    for (const record of resolverMap.records) {
+        if (record?.id) {
+            byId.set(record.id, record);
+        }
+    }
+    for (const record of session.storedArtifacts) {
+        if (record?.id) {
+            byId.set(record.id, record);
+        }
+    }
+    return [...byId.values()].slice(-MAX_PROMPT_ARTIFACTS);
+}
+function getRecentTurnsForPrompt(session, agentLabel, currentIncomingMessage, resolverMap) {
+    if (session.recentTurns.length > 0) {
+        return session.recentTurns
+            .slice(-MAX_RECENT_CONTEXT_TURNS)
+            .map((turn) => sanitizeRecentTurn(turn, resolverMap))
+            .filter((turn) => turn.body);
+    }
+    return readRecentConversationTurns(session.transcriptPath, agentLabel, currentIncomingMessage, resolverMap);
 }
 function persistRoleTokenBackup(session, role) {
     const sourcePath = getRoleTokenPath(role);

@@ -50,13 +50,14 @@ const FORBIDDEN_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\b(a2a_server|broker\.a2alinker\.net|change broker|switch broker)\b/i, reason: 'broker changes are forbidden during a session' },
 ];
 
-const COMMAND_HINTS = /\b(run|execute|launch|invoke|shell|command)\b/i;
+const COMMAND_HINTS = /\b(run|execute|launch|invoke)\b|\bshell command\b/i;
 const TEST_BUILD_HINTS = /\b(test|tests|jest|npm run build|npm run test|tsc|build)\b/i;
 const REPO_EDIT_HINTS = /\b(edit|modify|patch|rewrite|update|change|fix|refactor|implement)\b/i;
 const READ_HINTS = /\b(read|inspect|review|open|check|look at|show|view|cat)\b/i;
 const FILE_HINTS = /\b(file|files|source|code|repo|repository|module|package|config)\b/i;
 const WEB_HINTS = /\b(web|website|webpage|internet|online|browse|search|google|url|link|curl|wget|weather|forecast|docs|documentation|news|latest|current)\b/i;
 const WEB_ACTION_HINTS = /\b(check|look up|lookup|find|search|browse|open|visit|fetch|get|read|review|research|verify|confirm|use|call)\b/i;
+const NEGATED_EXECUTION_HINTS = /\b(do not|don't|dont|without|instead of)\s+(?:\w+\s+){0,2}(run|execute|launch|invoke)\b/i;
 
 export function createSessionPolicy(input: {
   unattended: boolean;
@@ -201,7 +202,7 @@ export function evaluateIncomingMessage(
     };
   }
 
-  if (COMMAND_HINTS.test(message) && !TEST_BUILD_HINTS.test(message) && !normalized.exactCommand) {
+  if (isGeneralCommandExecutionRequest(message) && !normalized.exactCommand) {
     return {
       decision: 'require_approval',
       reason: 'general command execution requires local approval',
@@ -327,10 +328,16 @@ function buildRequestSummary(
   if (readWorkspaceRequested) {
     return 'Read files in the workspace';
   }
-  if (COMMAND_HINTS.test(message)) {
+  if (isGeneralCommandExecutionRequest(message)) {
     return 'Run a shell command';
   }
   return 'Handle the remote request';
+}
+
+function isGeneralCommandExecutionRequest(message: string): boolean {
+  return COMMAND_HINTS.test(message)
+    && !TEST_BUILD_HINTS.test(message)
+    && !NEGATED_EXECUTION_HINTS.test(message);
 }
 
 function extractExactCommand(message: string, allowedCommands: string[]): string | null {

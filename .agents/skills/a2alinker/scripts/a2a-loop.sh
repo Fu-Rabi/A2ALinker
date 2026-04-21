@@ -22,6 +22,101 @@ MAX_WAIT_CONFLICTS="${A2A_MAX_WAIT_CONFLICTS:-3}"
 WAIT_CONFLICT_COUNT=0
 READ_STDIN=false
 INFLIGHT_PATH="$(a2a_inflight_message_path_for_role "$ROLE" 2>/dev/null || true)"
+ARTIFACT_STANDBY_BYTES_THRESHOLD="${A2A_ARTIFACT_STANDBY_BYTES_THRESHOLD:-2048}"
+ARTIFACT_STANDBY_LONG_LINES_THRESHOLD="${A2A_ARTIFACT_STANDBY_LONG_LINES_THRESHOLD:-10}"
+
+normalize_loop_message() {
+  local payload="$1"
+  if printf '%s' "$payload" | grep -Eq '\[(OVER|STANDBY)\][[:space:]]*$'; then
+    printf '%s' "$payload"
+    return 0
+  fi
+  printf '%s [OVER]' "$payload"
+}
+
+loop_message_signal() {
+  local payload="$1"
+  if printf '%s' "$payload" | grep -Eq '\[STANDBY\][[:space:]]*$'; then
+    printf 'STANDBY\n'
+    return 0
+  fi
+  if printf '%s' "$payload" | grep -Eq '\[OVER\][[:space:]]*$'; then
+    printf 'OVER\n'
+    return 0
+  fi
+  printf '\n'
+}
+
+loop_message_body() {
+  local payload="$1"
+  printf '%s' "$payload" | perl -0pe 's/\s*\[(?:OVER|STANDBY)\]\s*$//s'
+}
+
+loop_payload_is_artifact_like() {
+  local payload="$1"
+  local bytes line_count
+  bytes=$(printf '%s' "$payload" | wc -c | tr -d '[:space:]')
+  if [ "${bytes:-0}" -gt "$ARTIFACT_STANDBY_BYTES_THRESHOLD" ]; then
+    return 0
+  fi
+  if printf '%s' "$payload" | grep -Eq '^[[:space:]]*<!DOCTYPE html>|^[[:space:]]*<html\b|^[[:space:]]*<\?xml\b'; then
+    return 0
+  fi
+  if printf '%s' "$payload" | grep -Eq '^[[:space:]]*[\[{]'; then
+    if printf '%s' "$payload" | grep -Eq '^[[:space:]]*\{[[:space:]]*$|^[[:space:]]*\[[[:space:]]*$|"[[:space:]]*:'; then
+      return 0
+    fi
+  fi
+  if printf '%s' "$payload" | grep -Fq '```'; then
+    return 0
+  fi
+  line_count=$(printf '%s' "$payload" | awk 'END { print NR }')
+  if [ "${line_count:-0}" -ge "$ARTIFACT_STANDBY_LONG_LINES_THRESHOLD" ]; then
+    return 0
+  fi
+  return 1
+}
+
+guard_standby_artifact_send() {
+  local payload="$1"
+  local signal body
+  signal="$(loop_message_signal "$payload")"
+  if [ "$signal" != "STANDBY" ]; then
+    return 0
+  fi
+
+  printf '%s\n' "Notice: this message is being sent as STANDBY; the remote agent is not expected to reply automatically." >&2
+  body="$(loop_message_body "$payload")"
+  if ! loop_payload_is_artifact_like "$body"; then
+    return 0
+  fi
+
+  if [ "${A2A_ALLOW_STANDBY_ARTIFACT_SEND:-0}" = "1" ]; then
+    a2a_debug_log "$ROLE" "loop:standby_artifact_guard override=1"
+    return 0
+  fi
+
+  if [ -t 0 ] && [ -t 1 ]; then
+    local answer
+    printf '%s' "This STANDBY message looks like an inline artifact. The remote side may store it, but it will not automatically review or answer it. Send anyway? [y/N] " >&2
+    read -r answer || true
+    case "$(printf '%s' "${answer:-}" | tr '[:upper:]' '[:lower:]')" in
+      y|yes)
+        a2a_debug_log "$ROLE" "loop:standby_artifact_guard confirmed=1"
+        return 0
+        ;;
+      *)
+        a2a_debug_log "$ROLE" "loop:standby_artifact_guard denied=1"
+        echo "ERROR: Refusing to send artifact-like STANDBY message without explicit confirmation." >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  a2a_debug_log "$ROLE" "loop:standby_artifact_guard blocked_noninteractive=1"
+  echo "ERROR: Refusing to send artifact-like STANDBY message in non-interactive mode. Set A2A_ALLOW_STANDBY_ARTIFACT_SEND=1 to override." >&2
+  return 1
+}
 
 if [ "$MESSAGE" = "--stdin" ]; then
   READ_STDIN=true
@@ -36,8 +131,11 @@ fi
 
 # If a message was provided, send it first
 if [ "$READ_STDIN" = true ]; then
+  MESSAGE="$(cat)"
+  MESSAGE="$(normalize_loop_message "$MESSAGE")"
+  guard_standby_artifact_send "$MESSAGE" || exit 1
   a2a_debug_log "$ROLE" "loop:send stdin=1"
-  SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" --stdin)
+  SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" "$MESSAGE")
   echo "$SEND_RESULT"
   a2a_debug_log "$ROLE" "loop:send_result result=$SEND_RESULT"
   if [ "$SEND_RESULT" != "DELIVERED" ]; then
@@ -45,9 +143,10 @@ if [ "$READ_STDIN" = true ]; then
   fi
   if [ -n "$INFLIGHT_PATH" ]; then
     mkdir -p "$(dirname "$INFLIGHT_PATH")"
-    cat > "$INFLIGHT_PATH"
+    printf '%s\n' "$MESSAGE" > "$INFLIGHT_PATH"
   fi
 elif [ -n "$MESSAGE" ]; then
+  guard_standby_artifact_send "$MESSAGE" || exit 1
   a2a_debug_log "$ROLE" "loop:send message_present=yes"
   SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" "$MESSAGE")
   echo "$SEND_RESULT"
