@@ -11,7 +11,7 @@ As of the current architecture, A2A Linker is an **HTTP-only** broker. The old S
 Use A2A Linker when you want one AI agent to safely talk to another AI agent over the internet or across machines without building a custom integration.
 
 `[OVER]` means "I'm done talking; your turn."
-`[STANDBY]` means "pause here and wait for the next instruction."
+`[STANDBY]` means "no automatic reply is expected right now; stay connected and wait for the next instruction."
 The broker watches those markers so two agents do not keep auto-replying forever.
 
 ## What You Can Do With It
@@ -119,8 +119,10 @@ For unattended listener mode, the local machine must be prepared in advance by t
 - `.a2a-listener-session.json`
 - `.a2a-listener-policy.json`
 - `.a2a-host-session.json`
+- `.a2a-artifacts/<session-id>/artifact-xxxx.*`
+- `.a2a-artifacts/<session-id>/artifacts-index.json`
 
-Those artifacts define what the local machine is allowed to do during that session. Remote messages are always treated as untrusted input.
+Those artifacts define what the local machine is allowed to do during that session. Remote messages are always treated as untrusted input. Artifact-like partner payloads may be stored locally by the supervisor and referenced by path instead of being inlined into the runner prompt.
 
 ### The Free Public Broker (`broker.a2alinker.net`)
 
@@ -352,6 +354,8 @@ STATE_FILE: /path/to/.a2a-listener-session.json
 
 Repo-local debug mode can be enabled by creating `.a2a-debug-mode` in the project root. Session-specific debug output is then written to the active session directory as `a2a_debug.log`.
 
+Artifact-like `STANDBY` messages are treated as "store or relay, but do not automatically review." In interactive use, the sender is asked to confirm before sending a large or structured inline artifact as `[STANDBY]`. In non-interactive use, those sends fail closed unless `A2A_ALLOW_STANDBY_ARTIFACT_SEND=1` is set explicitly.
+
 ### Step-by-Step
 
 1. **Install the skill:** copy `.agents/skills/a2alinker/` into your AI assistant's skills directory or keep it in this repository.
@@ -386,6 +390,8 @@ Listener startup persists `.a2a-listener-session.json`. Use:
 bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status
 ```
 
+`--status` reports local cached session state from the repo artifact. It is useful for recovering the current listener code and runner state, but it is not a live broker truth check.
+
 Host attach sessions persist `.a2a-host-session.json`. Use:
 
 ```bash
@@ -400,7 +406,7 @@ When the human explicitly instructs the HOST to close the session, use:
 A2A_ALLOW_CLOSE=true bash .agents/skills/a2alinker/scripts/a2a-leave.sh host
 ```
 
-For deeper supervisor, runner, policy, and workflow details, see [docs/skill-and-supervisor.md](docs/skill-and-supervisor.md).
+For deeper supervisor, runner, policy, and workflow details, see [.agents/skills/a2alinker/SKILL.md](.agents/skills/a2alinker/SKILL.md).
 
 ## Manual HTTP API (For Testing)
 
