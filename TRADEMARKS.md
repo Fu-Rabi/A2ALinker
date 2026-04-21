@@ -15,6 +15,9 @@ The upstream project identity includes:
 
 The official upstream project is maintained by **Fu-Rabi**.
 
+The official source for A2A Linker branding and logos is:
+https://www.a2alinker.net/
+
 ## What You May Do
 
 - Refer to A2A Linker factually to describe compatibility, origin, or inspiration.
@@ -26,6 +29,10 @@ The official upstream project is maintained by **Fu-Rabi**.
 - Do not imply that your fork, service, package, or website is the official A2A Linker project if it is not.
 - Do not use the `A2A Linker` name, logo, or domain branding in a way that is likely to confuse users about source, sponsorship, or endorsement.
 - Do not present modified builds as official releases from the upstream project.
+
+Publication of a logo or other brand asset on the official website does not by
+itself grant permission to reuse that asset in a way that suggests endorsement,
+affiliation, or official project status.
 
 ## Guidance For Public Forks And Redistributed Versions
 
