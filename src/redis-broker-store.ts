@@ -42,6 +42,7 @@ interface TokenRecord {
 
 interface RoomRecord {
   roomName: string;
+  sessionType: SessionType;
   creatorToken: string;
   headless: boolean;
   hostToken: string | null;
@@ -99,6 +100,7 @@ export class RedisBrokerStore implements BrokerStore {
     const role: SessionRole = type === 'standard' ? 'host' : 'joiner';
     const room: RoomRecord = {
       roomName,
+      sessionType: type,
       creatorToken: token,
       headless,
       hostToken: role === 'host' ? token : null,
@@ -109,7 +111,7 @@ export class RedisBrokerStore implements BrokerStore {
     await this.setCode(code, {
       roomName,
       codeType: type === 'standard' ? 'invite' : 'listener',
-    });
+    }, this.getCodeTtlMs(type, headless));
     await this.pairToken(token, roomName, role);
     return { token, code, roomName, role };
   }
@@ -131,6 +133,7 @@ export class RedisBrokerStore implements BrokerStore {
     const role: SessionRole = type === 'standard' ? 'host' : 'joiner';
     await this.setRoom({
       roomName,
+      sessionType: type,
       creatorToken: token,
       headless: false,
       hostToken: role === 'host' ? token : null,
@@ -140,7 +143,7 @@ export class RedisBrokerStore implements BrokerStore {
     await this.setCode(code, {
       roomName,
       codeType: type === 'standard' ? 'invite' : 'listener',
-    });
+    }, this.getCodeTtlMs(type, false));
     await this.pairToken(token, roomName, role);
     return { code, roomName };
   }
@@ -560,12 +563,12 @@ export class RedisBrokerStore implements BrokerStore {
   private async setRoom(room: RoomRecord): Promise<void> {
     const ttlMs = room.hostToken && room.joinerToken
       ? this.config.sessionIdleTtlMs
-      : this.config.waitingRoomTtlMs;
+      : this.getWaitingRoomTtlMs(room);
     await this.client.set(this.roomKey(room.roomName), JSON.stringify(room), { PX: ttlMs });
   }
 
-  private async setCode(code: string, record: CodeRecord): Promise<void> {
-    await this.client.set(this.codeKey(code), JSON.stringify(record), { PX: this.config.codeTtlMs });
+  private async setCode(code: string, record: CodeRecord, ttlMs: number): Promise<void> {
+    await this.client.set(this.codeKey(code), JSON.stringify(record), { PX: ttlMs });
   }
 
   private async getCode(code: string): Promise<CodeRecord | null> {
@@ -671,7 +674,7 @@ export class RedisBrokerStore implements BrokerStore {
       return true;
     }
 
-    const ttlMs = validRecords.length === 1 ? this.config.waitingRoomTtlMs : this.config.sessionIdleTtlMs;
+    const ttlMs = validRecords.length === 1 ? this.getWaitingRoomTtlMs(room) : this.config.sessionIdleTtlMs;
     const referenceTime = validRecords.length === 1
       ? Math.max(...validRecords.map((record) => record.createdAt))
       : Math.max(...validRecords.map((record) => record.lastSeen));
@@ -692,6 +695,20 @@ export class RedisBrokerStore implements BrokerStore {
     if (!room.hostToken && !room.joinerToken) {
       await this.client.del(this.roomKey(roomName));
     }
+  }
+
+  private getCodeTtlMs(type: SessionType, headless: boolean): number {
+    if (type === 'listener' && headless) {
+      return this.config.headlessListenerCodeTtlMs;
+    }
+    return this.config.codeTtlMs;
+  }
+
+  private getWaitingRoomTtlMs(room: RoomRecord): number {
+    if (room.sessionType === 'listener' && room.headless) {
+      return this.config.headlessListenerWaitingRoomTtlMs;
+    }
+    return this.config.waitingRoomTtlMs;
   }
 
   private async scanKeys(pattern: string): Promise<string[]> {

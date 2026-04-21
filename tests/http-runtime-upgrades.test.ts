@@ -10,6 +10,10 @@ import { WaiterRegistry } from '../src/waiter-registry';
 import { WakeBus, WakeEvent } from '../src/wake-bus';
 
 describe('HTTP runtime upgrades', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('reports readiness', async () => {
     const res = await request(app).get('/ready');
     expect(res.status).toBe(200);
@@ -214,5 +218,59 @@ describe('HTTP runtime upgrades', () => {
       });
       await runtime.close();
     }
+  });
+
+  it('keeps headless listener setup alive on the extended pre-connect TTL', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(Date.parse('2026-01-01T00:00:00.000Z'));
+
+    const config = createRuntimeConfig({
+      NODE_ENV: 'test',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'h'.repeat(32),
+      CODE_TTL_MS: '100',
+      WAITING_ROOM_TTL_MS: '100',
+      HEADLESS_LISTENER_CODE_TTL_MS: '500',
+      HEADLESS_LISTENER_WAITING_ROOM_TTL_MS: '500',
+    });
+    const store = new MemoryBrokerStore(config);
+
+    const setup = await store.setupSession('listener', true);
+    expect(setup).not.toBeNull();
+
+    jest.advanceTimersByTime(150);
+
+    const join = await store.registerAndJoin((setup as NonNullable<typeof setup>).code);
+    expect(join).not.toBe('invalid_code');
+    if (join !== 'invalid_code') {
+      expect(join.role).toBe('host');
+      expect(join.headless).toBe(true);
+    }
+  });
+
+  it('does not extend the pre-connect TTL for interactive listeners or standard rooms', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(Date.parse('2026-01-01T00:00:00.000Z'));
+
+    const config = createRuntimeConfig({
+      NODE_ENV: 'test',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'i'.repeat(32),
+      CODE_TTL_MS: '100',
+      WAITING_ROOM_TTL_MS: '100',
+      HEADLESS_LISTENER_CODE_TTL_MS: '500',
+      HEADLESS_LISTENER_WAITING_ROOM_TTL_MS: '500',
+    });
+    const store = new MemoryBrokerStore(config);
+
+    const interactiveListener = await store.setupSession('listener', false);
+    const standardHeadless = await store.setupSession('standard', true);
+
+    jest.advanceTimersByTime(150);
+
+    await expect(store.registerAndJoin((interactiveListener as NonNullable<typeof interactiveListener>).code))
+      .resolves.toBe('invalid_code');
+    await expect(store.registerAndJoin((standardHeadless as NonNullable<typeof standardHeadless>).code))
+      .resolves.toBe('invalid_code');
   });
 });

@@ -40,6 +40,7 @@ interface TokenRecord {
 
 interface RoomRecord {
   roomName: string;
+  sessionType: SessionType;
   creatorToken: string;
   headless: boolean;
   hostToken: string | null;
@@ -109,6 +110,7 @@ export class MemoryBrokerStore implements BrokerStore {
     const role: SessionRole = type === 'standard' ? 'host' : 'joiner';
     const room: RoomRecord = {
       roomName,
+      sessionType: type,
       creatorToken: token,
       headless,
       hostToken: role === 'host' ? token : null,
@@ -119,7 +121,7 @@ export class MemoryBrokerStore implements BrokerStore {
     this.codes.set(code, {
       roomName,
       codeType: type === 'standard' ? 'invite' : 'listener',
-      expiresAt: Date.now() + this.config.codeTtlMs,
+      expiresAt: Date.now() + this.getCodeTtlMs(type, headless),
     });
     this.pairToken(token, roomName, role);
     return { token, code, roomName, role };
@@ -143,6 +145,7 @@ export class MemoryBrokerStore implements BrokerStore {
     const role: SessionRole = type === 'standard' ? 'host' : 'joiner';
     this.rooms.set(roomName, {
       roomName,
+      sessionType: type,
       creatorToken: token,
       headless: false,
       hostToken: role === 'host' ? token : null,
@@ -152,7 +155,7 @@ export class MemoryBrokerStore implements BrokerStore {
     this.codes.set(code, {
       roomName,
       codeType: type === 'standard' ? 'invite' : 'listener',
-      expiresAt: Date.now() + this.config.codeTtlMs,
+      expiresAt: Date.now() + this.getCodeTtlMs(type, false),
     });
     this.pairToken(token, roomName, role);
     return { code, roomName };
@@ -558,7 +561,9 @@ export class MemoryBrokerStore implements BrokerStore {
         continue;
       }
 
-      const roomAgeTtl = participants.length === 1 ? this.config.waitingRoomTtlMs : this.config.sessionIdleTtlMs;
+      const roomAgeTtl = participants.length === 1
+        ? this.getWaitingRoomTtlMs(room)
+        : this.config.sessionIdleTtlMs;
       const newestSeen = Math.max(...participants.map((participant) => participant.lastSeen));
       const newestCreated = Math.max(...participants.map((participant) => participant.createdAt));
       const referenceTime = participants.length === 1 ? newestCreated : newestSeen;
@@ -591,6 +596,20 @@ export class MemoryBrokerStore implements BrokerStore {
     tokenRecord.lastSeen = Date.now();
     tokenRecord.standby = false;
     tokenRecord.recentShortMessageCount = 0;
+  }
+
+  private getCodeTtlMs(type: SessionType, headless: boolean): number {
+    if (type === 'listener' && headless) {
+      return this.config.headlessListenerCodeTtlMs;
+    }
+    return this.config.codeTtlMs;
+  }
+
+  private getWaitingRoomTtlMs(room: RoomRecord): number {
+    if (room.sessionType === 'listener' && room.headless) {
+      return this.config.headlessListenerWaitingRoomTtlMs;
+    }
+    return this.config.waitingRoomTtlMs;
   }
 
   private pushInbox(token: string, text: string, closeAfterDelivery: boolean = false): void {

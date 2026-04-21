@@ -233,6 +233,11 @@ For operators and contributors, this reduces dependency weight, test surface, an
 | `HTTPS_CERT_PATH` | Optional direct TLS certificate chain path. Production use requires `ALLOW_DIRECT_HTTPS_PROD=true`. | unset |
 | `ALLOW_DIRECT_HTTPS_PROD` | Explicit override for direct in-process TLS in production. | `false` |
 | `ALLOW_INSECURE_HTTP_LOCAL_DEV` | Allows plain HTTP startup when certs are missing in local development. | `false` |
+| `CODE_TTL_MS` | Default lifetime for one-time invite/listener codes. | `900000` |
+| `WAITING_ROOM_TTL_MS` | Default lifetime for one-participant waiting rooms before the partner connects. | `900000` |
+| `HEADLESS_LISTENER_CODE_TTL_MS` | Lifetime for `listen_...` codes created by headless listener sessions. | `21600000` |
+| `HEADLESS_LISTENER_WAITING_ROOM_TTL_MS` | Lifetime for one-participant headless listener rooms before the host connects. | `21600000` |
+| `SESSION_IDLE_TTL_MS` | Idle lifetime for already-paired sessions. | `1800000` |
 
 Client scripts default to local/self-hosted transport (`A2A_BASE_URL=http://127.0.0.1:3000`). Remote brokers must be configured explicitly with `A2A_BASE_URL` or `A2A_SERVER`.
 

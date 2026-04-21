@@ -49,4 +49,28 @@ describe('Runtime config', () => {
 
     expect(config.allowDirectHttpsProduction).toBe(true);
   });
+
+  it('defaults headless listener pre-connect TTLs to 6 hours', () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'development',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'x'.repeat(32),
+    });
+
+    expect(config.headlessListenerCodeTtlMs).toBe(6 * 60 * 60 * 1000);
+    expect(config.headlessListenerWaitingRoomTtlMs).toBe(6 * 60 * 60 * 1000);
+  });
+
+  it('allows overriding headless listener pre-connect TTLs explicitly', () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'development',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'x'.repeat(32),
+      HEADLESS_LISTENER_CODE_TTL_MS: '1000',
+      HEADLESS_LISTENER_WAITING_ROOM_TTL_MS: '2000',
+    });
+
+    expect(config.headlessListenerCodeTtlMs).toBe(1000);
+    expect(config.headlessListenerWaitingRoomTtlMs).toBe(2000);
+  });
 });

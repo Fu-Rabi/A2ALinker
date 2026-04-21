@@ -20,6 +20,8 @@ export interface RuntimeConfig {
   tokenTtlMs: number;
   codeTtlMs: number;
   waitingRoomTtlMs: number;
+  headlessListenerCodeTtlMs: number;
+  headlessListenerWaitingRoomTtlMs: number;
   sessionIdleTtlMs: number;
   waiterTtlMs: number;
   inboxTtlMs: number;
@@ -118,6 +120,8 @@ export function createRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runti
     tokenTtlMs: parseInteger(env.TOKEN_TTL_MS, 15 * 60 * 1000),
     codeTtlMs: parseInteger(env.CODE_TTL_MS, 15 * 60 * 1000),
     waitingRoomTtlMs: parseInteger(env.WAITING_ROOM_TTL_MS, 15 * 60 * 1000),
+    headlessListenerCodeTtlMs: parseInteger(env.HEADLESS_LISTENER_CODE_TTL_MS, 6 * 60 * 60 * 1000),
+    headlessListenerWaitingRoomTtlMs: parseInteger(env.HEADLESS_LISTENER_WAITING_ROOM_TTL_MS, 6 * 60 * 60 * 1000),
     sessionIdleTtlMs: parseInteger(env.SESSION_IDLE_TTL_MS, 30 * 60 * 1000),
     waiterTtlMs: parseInteger(env.WAITER_TTL_MS, 115_000),
     inboxTtlMs: parseInteger(env.INBOX_TTL_MS, 30 * 60 * 1000),
