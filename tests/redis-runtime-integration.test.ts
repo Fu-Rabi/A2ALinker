@@ -148,4 +148,51 @@ describeIfRedis('Redis runtime integration', () => {
     expect(decisionB).toEqual({ allowed: true });
     expect(decisionC.allowed).toBe(false);
   });
+
+  it('preserves inline signal markers and uses only a trailing transport marker in the Redis store', async () => {
+    const setup = await runtimeA.store.setupSession('standard', false);
+    expect(setup).not.toBeNull();
+    const join = await runtimeB.store.registerAndJoin((setup as NonNullable<typeof setup>).code);
+    expect(join).not.toBe('invalid_code');
+    expect(typeof join).not.toBe('string');
+
+    const send = await runtimeA.store.sendMessage(
+      (setup as NonNullable<typeof setup>).token,
+      'Visible <code>[STANDBY]</code> marker [OVER]',
+    );
+
+    expect(send.kind).toBe('delivered');
+    const delivered = await runtimeB.store.consumeInbox((join as Exclude<typeof join, string>).token);
+    expect(delivered).toContain('<code>[STANDBY]</code>');
+    expect(delivered).toMatch(/^MESSAGE_RECEIVED\n┌─ [^\n]+ \[OVER\]\n/m);
+
+    const senderRecord = await (runtimeA.store as any).getToken((setup as NonNullable<typeof setup>).token);
+    expect(senderRecord.standby).toBe(false);
+  });
+
+  it('explicitly clears stale sender standby state when a Redis-store message has no trailing marker', async () => {
+    const setup = await runtimeA.store.setupSession('standard', false);
+    expect(setup).not.toBeNull();
+    const join = await runtimeB.store.registerAndJoin((setup as NonNullable<typeof setup>).code);
+    expect(join).not.toBe('invalid_code');
+    expect(typeof join).not.toBe('string');
+
+    await runtimeA.store.sendMessage((setup as NonNullable<typeof setup>).token, 'Waiting for the next chunk [STANDBY]');
+    await runtimeB.store.consumeInbox((join as Exclude<typeof join, string>).token);
+
+    let senderRecord = await (runtimeA.store as any).getToken((setup as NonNullable<typeof setup>).token);
+    expect(senderRecord.standby).toBe(true);
+
+    await runtimeA.store.sendMessage(
+      (setup as NonNullable<typeof setup>).token,
+      'Visible [STANDBY] marker inside body with no trailing transport signal',
+    );
+    const delivered = await runtimeB.store.consumeInbox((join as Exclude<typeof join, string>).token);
+
+    expect(delivered).toContain('Visible [STANDBY] marker inside body with no trailing transport signal');
+    expect(delivered).toMatch(/^MESSAGE_RECEIVED\n┌─ [^\n\[]+\n/m);
+
+    senderRecord = await (runtimeA.store as any).getToken((setup as NonNullable<typeof setup>).token);
+    expect(senderRecord.standby).toBe(false);
+  });
 });

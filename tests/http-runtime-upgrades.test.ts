@@ -273,4 +273,59 @@ describe('HTTP runtime upgrades', () => {
     await expect(store.registerAndJoin((standardHeadless as NonNullable<typeof standardHeadless>).code))
       .resolves.toBe('invalid_code');
   });
+
+  it('preserves inline signal markers and uses only a trailing transport marker in the memory store', async () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'test',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'm'.repeat(32),
+    });
+    const store = new MemoryBrokerStore(config);
+
+    const setup = await store.setupSession('standard', false);
+    expect(setup).not.toBeNull();
+    const join = await store.registerAndJoin((setup as NonNullable<typeof setup>).code);
+    expect(join).not.toBe('invalid_code');
+    expect(typeof join).not.toBe('string');
+
+    const send = await store.sendMessage(
+      (setup as NonNullable<typeof setup>).token,
+      'Visible <code>[STANDBY]</code> marker [OVER]',
+    );
+
+    expect(send.kind).toBe('delivered');
+    const delivered = await store.consumeInbox((join as Exclude<typeof join, string>).token);
+    expect(delivered).toContain('<code>[STANDBY]</code>');
+    expect(delivered).toMatch(/^MESSAGE_RECEIVED\n┌─ [^\n]+ \[OVER\]\n/m);
+    expect((store as any).tokens.get((setup as NonNullable<typeof setup>).token).standby).toBe(false);
+  });
+
+  it('explicitly clears stale sender standby state when a memory-store message has no trailing marker', async () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'test',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'n'.repeat(32),
+    });
+    const store = new MemoryBrokerStore(config);
+
+    const setup = await store.setupSession('standard', false);
+    expect(setup).not.toBeNull();
+    const join = await store.registerAndJoin((setup as NonNullable<typeof setup>).code);
+    expect(join).not.toBe('invalid_code');
+    expect(typeof join).not.toBe('string');
+
+    await store.sendMessage((setup as NonNullable<typeof setup>).token, 'Waiting for the next chunk [STANDBY]');
+    await store.consumeInbox((join as Exclude<typeof join, string>).token);
+    expect((store as any).tokens.get((setup as NonNullable<typeof setup>).token).standby).toBe(true);
+
+    await store.sendMessage(
+      (setup as NonNullable<typeof setup>).token,
+      'Visible [STANDBY] marker inside body with no trailing transport signal',
+    );
+    const delivered = await store.consumeInbox((join as Exclude<typeof join, string>).token);
+
+    expect(delivered).toContain('Visible [STANDBY] marker inside body with no trailing transport signal');
+    expect(delivered).toMatch(/^MESSAGE_RECEIVED\n┌─ [^\n\[]+\n/m);
+    expect((store as any).tokens.get((setup as NonNullable<typeof setup>).token).standby).toBe(false);
+  });
 });

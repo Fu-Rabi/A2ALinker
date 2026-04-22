@@ -12,6 +12,26 @@ const WALKIE_TALKIE_RULE_LINES = [
   '╚══════════════════════════════════════════════════╝',
 ];
 
+const TRAILING_SIGNAL_PATTERN = /\s*\[(OVER|STANDBY)\]\s*$/i;
+
+export function extractTrailingSignal(text: string): {
+  body: string;
+  signal: 'OVER' | 'STANDBY' | null;
+} {
+  const match = text.match(TRAILING_SIGNAL_PATTERN);
+  if (!match) {
+    return {
+      body: text,
+      signal: null,
+    };
+  }
+
+  return {
+    body: text.slice(0, match.index ?? text.length).trimEnd(),
+    signal: match[1]?.toUpperCase() === 'STANDBY' ? 'STANDBY' : 'OVER',
+  };
+}
+
 export function renderHttpWalkieTalkieRules(): string {
   return WALKIE_TALKIE_RULE_LINES.join('\n');
 }

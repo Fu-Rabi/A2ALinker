@@ -40,8 +40,19 @@ export interface PolicyEvaluation {
   grantCandidates: SessionGrantCandidate[];
 }
 
+const SECRET_ACCESS_VERB_PATTERN = 'read|show|print|dump|reveal|expose|copy|cat|grep|send|upload|fetch|get';
+const SECRET_TARGET_PATTERN = 'token|tokens|password|passwords|api[_ -]?key|api[_ -]?keys|credential|credentials|secret|secrets|env|environment variable';
+const SECRET_IDENTIFIER_PATTERN = 'OPENAI_API_KEY|AWS_SECRET_ACCESS_KEY|GH_TOKEN|GITHUB_TOKEN';
+
 const FORBIDDEN_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /\b(token|password|api[_ -]?key|credential)s?\b/i, reason: 'remote secret access is forbidden' },
+  {
+    pattern: new RegExp(`\\b(${SECRET_ACCESS_VERB_PATTERN})\\b[^.!?\\n]{0,40}\\b(${SECRET_TARGET_PATTERN})\\b`, 'i'),
+    reason: 'remote secret access is forbidden',
+  },
+  {
+    pattern: new RegExp(`\\b(${SECRET_ACCESS_VERB_PATTERN})\\b[^.!?\\n]{0,40}\\b(${SECRET_IDENTIFIER_PATTERN})\\b`, 'i'),
+    reason: 'remote secret access is forbidden',
+  },
   { pattern: /\b(exfiltrat|upload|send me|dump|print).*?\b(file|token|secret|env|credential)\b/i, reason: 'data exfiltration requests are forbidden' },
   { pattern: /\b(sudo|chmod|chown|ssh|scp)\b/i, reason: 'privileged or non-broker transport commands are forbidden' },
   { pattern: /\brm\s+-rf\b/i, reason: 'destructive shell commands are forbidden' },

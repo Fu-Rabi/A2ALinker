@@ -77,9 +77,26 @@ loop_payload_is_artifact_like() {
   return 1
 }
 
+loop_payload_is_reply_seeking() {
+  local payload="$1"
+  local normalized
+  normalized=$(printf '%s' "$payload" | tr '\n' ' ')
+  if printf '%s' "$normalized" | grep -Eiq '\bplease[[:space:]]+review\b|\breview\b.{0,120}\breturn\b|\breturn\b.{0,120}\b(approved|blocked|issues)\b|\bapprove[[:space:]]+or[[:space:]]+blocked\b|\breply[[:space:]]+with\b|\brespond[[:space:]]+with\b|\bsend[[:space:]]+back\b.{0,120}\b(approved|blocked|issues)\b'; then
+    return 0
+  fi
+  return 1
+}
+
 guard_standby_artifact_send() {
   local payload="$1"
   local signal body
+  local artifact_like=false
+  local reply_request=false
+  local artifact_allowed=false
+  local reply_allowed=false
+  local -a reasons=()
+  local reason_csv
+  local reason_text
   signal="$(loop_message_signal "$payload")"
   if [ "$signal" != "STANDBY" ]; then
     return 0
@@ -87,34 +104,77 @@ guard_standby_artifact_send() {
 
   printf '%s\n' "Notice: this message is being sent as STANDBY; the remote agent is not expected to reply automatically." >&2
   body="$(loop_message_body "$payload")"
-  if ! loop_payload_is_artifact_like "$body"; then
+
+  if loop_payload_is_artifact_like "$body"; then
+    artifact_like=true
+  fi
+  if loop_payload_is_reply_seeking "$body"; then
+    reply_request=true
+  fi
+
+  if [ "$artifact_like" = false ] && [ "$reply_request" = false ]; then
     return 0
   fi
 
   if [ "${A2A_ALLOW_STANDBY_ARTIFACT_SEND:-0}" = "1" ]; then
-    a2a_debug_log "$ROLE" "loop:standby_artifact_guard override=1"
+    artifact_allowed=true
+  fi
+  if [ "${A2A_ALLOW_STANDBY_REPLY_REQUEST:-0}" = "1" ]; then
+    reply_allowed=true
+  fi
+
+  if [ "$artifact_like" = true ] && [ "$artifact_allowed" = false ]; then
+    reasons+=("artifact-like")
+  fi
+  if [ "$reply_request" = true ] && [ "$reply_allowed" = false ]; then
+    reasons+=("reply-seeking")
+  fi
+
+  if [ "${#reasons[@]}" -eq 0 ]; then
+    reason_csv=""
+    if [ "$artifact_like" = true ]; then
+      reason_csv="artifact_like"
+    fi
+    if [ "$reply_request" = true ]; then
+      if [ -n "$reason_csv" ]; then
+        reason_csv="$reason_csv,reply_request"
+      else
+        reason_csv="reply_request"
+      fi
+    fi
+    if [ -n "$reason_csv" ]; then
+      a2a_debug_log "$ROLE" "loop:standby_guard reasons=$reason_csv override=1"
+    fi
     return 0
   fi
 
+  reason_csv=$(printf '%s\n' "${reasons[@]}" | sed 's/-/_/g' | paste -sd, -)
+  if [ "${#reasons[@]}" -eq 1 ]; then
+    reason_text="${reasons[0]}"
+  else
+    reason_text="${reasons[0]} and ${reasons[1]}"
+  fi
+  a2a_debug_log "$ROLE" "loop:standby_guard reasons=$reason_csv"
+
   if [ -t 0 ] && [ -t 1 ]; then
     local answer
-    printf '%s' "This STANDBY message looks like an inline artifact. The remote side may store it, but it will not automatically review or answer it. Send anyway? [y/N] " >&2
+    printf '%s' "This STANDBY message looks ${reason_text}. The remote side may store it, but it will not automatically review or answer it. Send anyway? [y/N] " >&2
     read -r answer || true
     case "$(printf '%s' "${answer:-}" | tr '[:upper:]' '[:lower:]')" in
       y|yes)
-        a2a_debug_log "$ROLE" "loop:standby_artifact_guard confirmed=1"
+        a2a_debug_log "$ROLE" "loop:standby_guard reasons=$reason_csv confirmed=1"
         return 0
         ;;
       *)
-        a2a_debug_log "$ROLE" "loop:standby_artifact_guard denied=1"
-        echo "ERROR: Refusing to send artifact-like STANDBY message without explicit confirmation." >&2
+        a2a_debug_log "$ROLE" "loop:standby_guard reasons=$reason_csv denied=1"
+        echo "ERROR: Refusing to send $reason_text STANDBY message without explicit confirmation." >&2
         return 1
         ;;
     esac
   fi
 
-  a2a_debug_log "$ROLE" "loop:standby_artifact_guard blocked_noninteractive=1"
-  echo "ERROR: Refusing to send artifact-like STANDBY message in non-interactive mode. Set A2A_ALLOW_STANDBY_ARTIFACT_SEND=1 to override." >&2
+  a2a_debug_log "$ROLE" "loop:standby_guard reasons=$reason_csv blocked_noninteractive=1"
+  echo "ERROR: Refusing to send $reason_text STANDBY message in non-interactive mode. Set the appropriate A2A_ALLOW_STANDBY_* override(s) to bypass." >&2
   return 1
 }
 

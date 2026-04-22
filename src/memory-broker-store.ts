@@ -16,6 +16,7 @@ import {
 } from './broker-store';
 import { RuntimeConfig } from './config';
 import { LOOP_DETECTION_THRESHOLD, SHORT_MESSAGE_BYTES } from './loop-detection';
+import { extractTrailingSignal } from './protocol';
 import { generateSecret } from './runtime-ids';
 import {
   formatDeliveredMessage,
@@ -272,20 +273,10 @@ export class MemoryBrokerStore implements BrokerStore {
       return { kind: 'partner_not_connected' };
     }
 
-    let data = body;
-    let signaled: 'OVER' | 'STANDBY' | null = null;
-
-    if (/\[STANDBY\]/i.test(data)) {
-      signaled = 'STANDBY';
-      data = data.replace(/\[STANDBY\]/gi, '').trim();
-      sender.standby = true;
-    } else if (/\[OVER\]/i.test(data)) {
-      signaled = 'OVER';
-      data = data.replace(/\[OVER\]/gi, '').trim();
-      sender.standby = false;
-    } else {
-      sender.standby = false;
-    }
+    const parsed = extractTrailingSignal(body);
+    const data = parsed.body;
+    const signaled = parsed.signal;
+    sender.standby = signaled === 'STANDBY';
 
     const wakeTokens = new Set<string>();
 

@@ -27,6 +27,35 @@ function withJoinToken<T>(token: string, run: () => T): T {
 
 describe('a2a-loop.sh', () => {
     const realScriptPath = path.resolve(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-loop.sh');
+    const realCommonPath = path.resolve(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-common.sh');
+
+    function setupTempLoopScripts(): {
+        root: string;
+        scriptDir: string;
+        sendLogPath: string;
+    } {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-test-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sendLogPath = path.join(root, 'send.log');
+        fs.mkdirSync(scriptDir, { recursive: true });
+
+        fs.copyFileSync(realScriptPath, path.join(scriptDir, 'a2a-loop.sh'));
+        fs.copyFileSync(realCommonPath, path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-loop.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+printf '%s\\n' "$2" >> "${sendLogPath}"
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+cat <<'EOF'
+TIMEOUT_ROOM_CLOSED
+EOF
+`);
+
+        return { root, scriptDir, sendLogPath };
+    }
 
     it('surfaces a host-closed system message instead of swallowing it', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-test-'));
@@ -104,6 +133,84 @@ EOF
             expect(result.status).toBe(0);
             expect(result.stdout).toContain('Ready for the next task');
             expect(result.stdout).not.toContain("HOST 'Agent-abcd' has joined. Session is live!");
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('blocks a reply-seeking STANDBY message in non-interactive mode', () => {
+        const { root, scriptDir, sendLogPath } = setupTempLoopScripts();
+
+        try {
+            const result = withJoinToken('tok_test_join', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'join', 'Please review this HTML and return APPROVED or issues only. [STANDBY]'],
+                { encoding: 'utf8', env: { ...process.env, A2A_DEBUG_PROMPT: '0' } },
+            ));
+
+            expect(result.status).toBe(1);
+            expect(result.stderr).toContain('reply-seeking');
+            expect(fs.existsSync(sendLogPath)).toBe(false);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('requires both STANDBY overrides when a message is both artifact-like and reply-seeking', () => {
+        const { root, scriptDir, sendLogPath } = setupTempLoopScripts();
+
+        try {
+            const message = '<!DOCTYPE html>\n<html><body>Please review this file and return APPROVED or issues only.</body></html> [STANDBY]';
+            const blocked = withJoinToken('tok_test_join', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'join', message],
+                {
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG_PROMPT: '0',
+                        A2A_ALLOW_STANDBY_ARTIFACT_SEND: '1',
+                    },
+                },
+            ));
+
+            expect(blocked.status).toBe(1);
+            expect(blocked.stderr).toContain('reply-seeking');
+            expect(fs.existsSync(sendLogPath)).toBe(false);
+
+            const allowed = withJoinToken('tok_test_join', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'join', message],
+                {
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG_PROMPT: '0',
+                        A2A_ALLOW_STANDBY_ARTIFACT_SEND: '1',
+                        A2A_ALLOW_STANDBY_REPLY_REQUEST: '1',
+                    },
+                },
+            ));
+
+            expect(allowed.status).toBe(0);
+            expect(fs.readFileSync(sendLogPath, 'utf8')).toContain('Please review this file and return APPROVED or issues only.');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('allows a neutral STANDBY status update without triggering the guard', () => {
+        const { root, scriptDir, sendLogPath } = setupTempLoopScripts();
+
+        try {
+            const result = withJoinToken('tok_test_join', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'join', 'Chunk stored locally. Standing by for the next part. [STANDBY]'],
+                { encoding: 'utf8', env: { ...process.env, A2A_DEBUG_PROMPT: '0' } },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(fs.readFileSync(sendLogPath, 'utf8')).toContain('Chunk stored locally. Standing by for the next part. [STANDBY]');
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }

@@ -15,6 +15,7 @@ Use A2A Linker when you want one AI agent to safely talk to another AI agent ove
 `[OVER]` means "I'm done talking; your turn."
 `[STANDBY]` means "no automatic reply is expected right now; stay connected and wait for the next instruction."
 The broker watches those markers so two agents do not keep auto-replying forever.
+Only a final trailing `[OVER]` or `[STANDBY]` is treated as transport control. Inline occurrences inside HTML, code, or ordinary text are delivered as normal content.
 
 ## What You Can Do With It
 
@@ -364,7 +365,10 @@ STATE_FILE: /path/to/.a2a-listener-session.json
 
 Repo-local debug mode can be enabled by creating `.a2a-debug-mode` in the project root. Session-specific debug output is then written to the active session directory as `a2a_debug.log`.
 
-Artifact-like `STANDBY` messages are treated as "store or relay, but do not automatically review." In interactive use, the sender is asked to confirm before sending a large or structured inline artifact as `[STANDBY]`. In non-interactive use, those sends fail closed unless `A2A_ALLOW_STANDBY_ARTIFACT_SEND=1` is set explicitly.
+Artifact-like `STANDBY` messages are treated as "store or relay, but do not automatically review." The sender-side guard also covers explicit reply-seeking `STANDBY` messages such as review requests that ask for `APPROVED` or issues back. In interactive use, the sender is asked to confirm before sending a large/structured inline artifact or a clearly reply-seeking message as `[STANDBY]`. In non-interactive use, those sends fail closed unless the corresponding override is set explicitly:
+
+- `A2A_ALLOW_STANDBY_ARTIFACT_SEND=1` for artifact-like `STANDBY` sends
+- `A2A_ALLOW_STANDBY_REPLY_REQUEST=1` for reply-seeking `STANDBY` sends
 
 ### Step-by-Step
 
