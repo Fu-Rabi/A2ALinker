@@ -31,6 +31,20 @@ function withHostToken<T>(token: string, run: () => T): T {
 }
 
 describe('A2A shell script usage guards', () => {
+    beforeEach(() => {
+        fs.rmSync('/tmp/a2a_host_base_url', { force: true });
+        fs.rmSync('/tmp/a2a_join_base_url', { force: true });
+        fs.rmSync('/tmp/a2a_host_debug.log', { force: true });
+        fs.rmSync('/tmp/a2a_join_debug.log', { force: true });
+    });
+
+    afterEach(() => {
+        fs.rmSync('/tmp/a2a_host_base_url', { force: true });
+        fs.rmSync('/tmp/a2a_join_base_url', { force: true });
+        fs.rmSync('/tmp/a2a_host_debug.log', { force: true });
+        fs.rmSync('/tmp/a2a_join_debug.log', { force: true });
+    });
+
     it('forwards unattended listener intent to the supervisor as --headless true', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-headless-'));
         const scriptDir = path.join(root, 'scripts');
@@ -61,13 +75,14 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
             },
         );
 
-        expect(result.status).toBe(0);
+        expect(result.status).toBe(1);
         const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
         expect(capturedArgs).toContain('--mode');
         expect(capturedArgs).toContain('listen');
         expect(capturedArgs).toContain('--headless');
         expect(capturedArgs).toContain('true');
         expect(result.stderr).toContain('LISTENER_START mode=unattended');
+        expect(result.stderr).toContain('Listener startup was unstable across 3 attempts');
         expect(result.stderr).toContain('RUNNER=codex');
         expect(result.stderr).toContain('WEB_ACCESS=false');
         expect(result.stderr).toContain('TESTS_BUILDS=true');
@@ -303,6 +318,69 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         );
 
         writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+printf '%s\n' "$@" > "${capturedArgsPath}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(root, '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--help'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_RUNNER_KIND: 'codex',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8').trim().split('\n');
+        const [runtimeArg] = capturedArgs;
+        expect(runtimeArg).toBeDefined();
+        expect(path.resolve(root, runtimeArg!)).toBe(packagedRuntimePath);
+        expect(capturedArgs).toContain('--help');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('falls back to the packaged runtime when repo dist is syntactically invalid', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-invalid-dist-'));
+        const binDir = path.join(root, 'bin');
+        const capturedArgsPath = path.join(root, 'captured-args');
+        const repoRoot = process.cwd();
+        const invalidDistPath = path.join(root, 'dist/a2a-supervisor.js');
+        const packagedRuntimePath = path.join(root, '.agents/skills/a2alinker/runtime/a2a-supervisor.js');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.mkdirSync(path.dirname(invalidDistPath), { recursive: true });
+
+        copyFile(
+            path.join(repoRoot, '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'),
+            path.join(root, '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'),
+        );
+        copyFile(
+            path.join(repoRoot, '.agents/skills/a2alinker/scripts/a2a-common.sh'),
+            path.join(root, '.agents/skills/a2alinker/scripts/a2a-common.sh'),
+        );
+        copyFile(
+            path.join(repoRoot, '.agents/skills/a2alinker/runtime/a2a-supervisor.js'),
+            packagedRuntimePath,
+        );
+        fs.writeFileSync(invalidDistPath, '/broken js/\n', 'utf8');
+
+        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+if [ "$1" = "--check" ]; then
+  shift
+  case "$1" in
+    *dist/a2a-supervisor.js)
+      exit 1
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+fi
 printf '%s\n' "$@" > "${capturedArgsPath}"
 `);
 
@@ -629,6 +707,22 @@ printf '%s' '{"token":"tok_abcdef123456","roomName":"room_demo","role":"host","h
         expect(result.stdout).toContain('ROLE: host');
         expect(result.stdout).toContain('NEXT_STEP: HOST sends the first message.');
         expect(result.stdout).toContain('a2a-loop.sh host "your message [OVER]"');
+
+        const hostArtifactPath = path.join(process.cwd(), '.a2a-host-session.json');
+        const hostArtifact = JSON.parse(fs.readFileSync(hostArtifactPath, 'utf8')) as {
+            brokerEndpoint: string;
+            attachedListenerCode: string | null;
+            status: string;
+            sessionDir: string;
+        };
+        expect(hostArtifact.brokerEndpoint).toBe('http://127.0.0.1:3000');
+        expect(hostArtifact.attachedListenerCode).toBe('listen_demo123');
+        expect(hostArtifact.status).toBe('connected');
+        expect(fs.existsSync(path.join(hostArtifact.sessionDir, 'a2a_host_token'))).toBe(true);
+
+        fs.rmSync(hostArtifact.sessionDir, { recursive: true, force: true });
+        fs.rmSync(hostArtifactPath, { force: true });
+        fs.rmSync('/tmp/a2a_host_token', { force: true });
     });
 
     it('accepts listen as an alias for the listener-side join token when closing', () => {
@@ -759,6 +853,56 @@ printf 'DELIVERED\n200'
 
         fs.rmSync(root, { recursive: true, force: true });
         fs.rmSync(tokenPath, { force: true });
+    });
+
+    it('prefers the active host broker state over a stale host artifact when send.sh omits broker env', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-active-host-broker-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        const brokerPath = '/tmp/a2a_host_base_url';
+        const curlArgsPath = path.join(root, 'curl-args');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+        fs.writeFileSync(brokerPath, 'http://127.0.0.1:3000\n', 'utf8');
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'error',
+            attachedListenerCode: 'listen_old_remote',
+            inviteCode: null,
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir: path.join(root, 'session'),
+            pid: null,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+printf '%s\n' "$@" > "${curlArgsPath}"
+printf 'DELIVERED\n200'
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-send.sh'), 'host', 'hello [OVER]'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('DELIVERED');
+        expect(fs.readFileSync(curlArgsPath, 'utf8')).toContain('http://127.0.0.1:3000/send');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+        fs.rmSync(brokerPath, { force: true });
     });
 
     it('defaults a2a-send.sh to the host role when only a message is provided', () => {
@@ -1522,10 +1666,15 @@ printf '%s' '{"token":"tok_host123456","inviteCode":"invite_debug123"}'
         );
 
         expect(result.status).toBe(0);
-        const debugLog = fs.readFileSync('/tmp/a2a_host_debug.log', 'utf8');
-        expect(debugLog).toContain('host_connect:start mode=standard');
-        expect(debugLog).toContain('host_connect:setup_complete invite_code=invite_debug123');
+        const hostArtifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8')) as {
+            sessionDir: string;
+        };
+        const fallbackDebugLog = fs.readFileSync('/tmp/a2a_host_debug.log', 'utf8');
+        const sessionDebugLog = fs.readFileSync(path.join(hostArtifact.sessionDir, 'a2a_debug.log'), 'utf8');
+        expect(fallbackDebugLog).toContain('host_connect:start mode=standard');
+        expect(sessionDebugLog).toContain('host_connect:setup_complete invite_code=invite_debug123');
 
+        fs.rmSync(hostArtifact.sessionDir, { recursive: true, force: true });
         fs.rmSync(root, { recursive: true, force: true });
         fs.rmSync('/tmp/a2a_host_debug.log', { force: true });
         fs.rmSync('/tmp/a2a_host_token', { force: true });

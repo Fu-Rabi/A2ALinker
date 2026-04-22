@@ -43,6 +43,7 @@ fi
 
 echo "$TOKEN" > /tmp/a2a_join_token
 chmod 600 /tmp/a2a_join_token
+a2a_store_role_base_url "join" "$BASE_URL"
 a2a_debug_log "join" "listen:setup_complete listener_code=$LISTEN_CODE"
 
 echo "ROLE: join"

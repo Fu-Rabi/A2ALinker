@@ -67,6 +67,67 @@ a2a_resolve_base_url() {
   printf '%s\n' "http://127.0.0.1:3000"
 }
 
+a2a_role_base_url_path() {
+  local role="$1"
+  printf '/tmp/a2a_%s_base_url\n' "$role"
+}
+
+a2a_read_role_base_url() {
+  local role="$1"
+  local base_url_path
+  base_url_path="$(a2a_role_base_url_path "$role")"
+  if [ ! -f "$base_url_path" ]; then
+    return 1
+  fi
+
+  local saved_base_url
+  saved_base_url=$(cat "$base_url_path")
+  if [ -z "$saved_base_url" ]; then
+    return 2
+  fi
+
+  printf '%s\n' "$saved_base_url"
+  return 0
+}
+
+a2a_store_role_base_url() {
+  local role="$1"
+  local base_url="$2"
+  local base_url_path
+  base_url_path="$(a2a_role_base_url_path "$role")"
+  printf '%s\n' "$base_url" > "$base_url_path"
+  chmod 600 "$base_url_path"
+}
+
+a2a_clear_role_base_url() {
+  local role="$1"
+  local base_url_path
+  base_url_path="$(a2a_role_base_url_path "$role")"
+  rm -f "$base_url_path"
+}
+
+a2a_resolve_active_base_url_for_role() {
+  local role="$1"
+  if [ -n "${A2A_BASE_URL:-}" ] || [ -n "${A2A_SERVER:-}" ]; then
+    a2a_resolve_base_url
+    return 0
+  fi
+
+  if [ -n "$role" ]; then
+    if a2a_read_role_base_url "$role"; then
+      return 0
+    fi
+
+    local artifact_path
+    artifact_path="$(a2a_artifact_path_for_role "$role" 2>/dev/null || true)"
+    if [ -n "$artifact_path" ] && a2a_read_broker_from_artifact "$artifact_path"; then
+      return 0
+    fi
+  fi
+
+  a2a_resolve_base_url
+}
+
 a2a_resolve_role() {
   if [ -f "/tmp/a2a_host_token" ] && [ -s "/tmp/a2a_host_token" ]; then
     printf 'host\n'
@@ -244,6 +305,15 @@ a2a_debug_log() {
   printf '%s [%s] pid=%s %s\n' "$timestamp" "$role" "$$" "$*" >> "$log_path"
 }
 
+a2a_debug_compact_text() {
+  local value="${1:-}"
+  value=$(printf '%s' "$value" | tr '\r\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')
+  if [ "${#value}" -gt 200 ]; then
+    value="${value:0:200}..."
+  fi
+  printf '%s' "$value"
+}
+
 # Sets PROMPT_FILE, RESPONSE_FILE, WORKDIR in the caller's shell context.
 # Optionally checks that a required executable is in PATH ($1).
 # Exits with an error message on validation failure.
@@ -305,4 +375,5 @@ a2a_cleanup_stale_join_token() {
     (curl -s --max-time 5 -X POST "$base_url/leave" -H "Authorization: Bearer $old_token" > /dev/null 2>&1 &)
   fi
   rm -f "$token_file"
+  a2a_clear_role_base_url "join"
 }

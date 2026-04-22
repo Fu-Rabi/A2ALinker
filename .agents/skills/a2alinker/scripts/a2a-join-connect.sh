@@ -19,7 +19,7 @@ case "$INVITE" in
   listen_*)
     echo "ERROR: Listener codes must be redeemed by HOST, not JOIN."
     echo "Use: bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh $INVITE"
-    echo "Or:  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code $INVITE --agent-label codex --goal \"<task>\""
+    echo "For remote brokers, prefer: A2A_BASE_URL=https://<broker> bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh $INVITE"
     exit 1
     ;;
 esac
@@ -49,6 +49,7 @@ fi
 
 echo "$TOKEN" > /tmp/a2a_join_token
 chmod 600 /tmp/a2a_join_token
+a2a_store_role_base_url "join" "$BASE_URL"
 
 # Print rules text (decoded from JSON \n sequences)
 RULES=$(echo "$RESP" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')

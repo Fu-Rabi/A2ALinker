@@ -16,6 +16,49 @@ if [ -f /tmp/a2a_host_token ]; then
   OLD_TOKEN=$(cat /tmp/a2a_host_token)
 fi
 
+persist_host_session_artifact() {
+  local status="$1"
+  local attached_listener_code="$2"
+  local invite_code="$3"
+  local headless="$4"
+  local token="$5"
+  local session_dir artifact_path now attached_listener_json invite_json
+
+  session_dir="$(mktemp -d "${TMPDIR:-/tmp}/a2a-host-session-XXXXXX")" || return 1
+  artifact_path="${PWD}/.a2a-host-session.json"
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  attached_listener_json="null"
+  invite_json="null"
+
+  if [ -n "$attached_listener_code" ]; then
+    attached_listener_json="\"$attached_listener_code\""
+  fi
+  if [ -n "$invite_code" ]; then
+    invite_json="\"$invite_code\""
+  fi
+
+  printf '%s\n' "$token" > "$session_dir/a2a_host_token"
+  chmod 600 "$session_dir/a2a_host_token"
+
+  cat > "$artifact_path" <<EOF
+{
+  "mode": "host",
+  "status": "$status",
+  "attachedListenerCode": $attached_listener_json,
+  "inviteCode": $invite_json,
+  "brokerEndpoint": "$BASE_URL",
+  "headless": $headless,
+  "sessionDir": "$session_dir",
+  "pid": null,
+  "startedAt": "$now",
+  "updatedAt": "$now",
+  "source": "local_cache",
+  "lastEvent": "$status",
+  "error": null
+}
+EOF
+}
+
 store_host_token() {
   local new_token="$1"
   echo "$new_token" > /tmp/a2a_host_token
@@ -30,10 +73,14 @@ if [ -n "$LISTEN_CODE" ]; then
   a2a_debug_log "host" "host_connect:start mode=listener_attach listen_code=$LISTEN_CODE base_url=$BASE_URL"
   # Listener flow: join the pre-staged room, become HOST
   # Now 1 round-trip: register + join in one call
-  RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/register-and-join/$LISTEN_CODE")
+  CURL_ERR_FILE=$(mktemp)
+  RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/register-and-join/$LISTEN_CODE" 2>"$CURL_ERR_FILE")
+  CURL_EXIT=$?
+  CURL_ERR=$(cat "$CURL_ERR_FILE")
+  rm -f "$CURL_ERR_FILE"
 
-  if [ $? -ne 0 ] || [ -z "$RESP" ]; then
-    a2a_debug_log "host" "host_connect:attach_failed response_present=$([ -n "$RESP" ] && echo yes || echo no)"
+  if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
+    a2a_debug_log "host" "host_connect:attach_failed curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
     echo "ERROR: Cannot reach A2A Linker server"
     exit 1
   fi
@@ -53,9 +100,11 @@ if [ -n "$LISTEN_CODE" ]; then
   fi
 
   store_host_token "$TOKEN"
+  a2a_store_role_base_url "host" "$BASE_URL"
 
   STATUS=$(echo "$RESP" | grep -o '([0-9]/[0-9] connected)')
   HEADLESS=$(echo "$RESP" | sed -En 's/.*"headless": *(true|false).*/\1/p')
+  persist_host_session_artifact "connected" "$LISTEN_CODE" "" "${HEADLESS:-false}" "$TOKEN"
   a2a_debug_log "host" "host_connect:attach_complete status=${STATUS:-unknown} headless=${HEADLESS:-unknown}"
   echo "STATUS: $STATUS"
   echo "ROLE: host"
@@ -65,12 +114,16 @@ else
   a2a_debug_log "host" "host_connect:start mode=standard base_url=$BASE_URL"
   # Standard flow: register + create room in 1 round-trip
   HEADLESS_ARG="${2:-false}"
+  CURL_ERR_FILE=$(mktemp)
   RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/setup" \
     -H "Content-Type: application/json" \
-    -d "{\"type\": \"standard\", \"headless\": $HEADLESS_ARG}")
+    -d "{\"type\": \"standard\", \"headless\": $HEADLESS_ARG}" 2>"$CURL_ERR_FILE")
+  CURL_EXIT=$?
+  CURL_ERR=$(cat "$CURL_ERR_FILE")
+  rm -f "$CURL_ERR_FILE"
 
-  if [ $? -ne 0 ] || [ -z "$RESP" ]; then
-    a2a_debug_log "host" "host_connect:setup_failed response_present=$([ -n "$RESP" ] && echo yes || echo no)"
+  if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
+    a2a_debug_log "host" "host_connect:setup_failed curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
     echo "ERROR: Cannot reach A2A Linker server"
     exit 1
   fi
@@ -86,6 +139,8 @@ else
   fi
 
   store_host_token "$TOKEN"
+  a2a_store_role_base_url "host" "$BASE_URL"
+  persist_host_session_artifact "waiting_for_join" "" "$INVITE" "$HEADLESS_ARG" "$TOKEN"
   a2a_debug_log "host" "host_connect:setup_complete invite_code=$INVITE headless=$HEADLESS_ARG"
   echo "ROLE: host"
   echo "INVITE_CODE: $INVITE"

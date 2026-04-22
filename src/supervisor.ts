@@ -853,6 +853,52 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
   }
 }
 
+export async function bootstrapHostAttachSession(options: SupervisorOptions): Promise<SessionState> {
+  const resolved = resolveOptions(options);
+  if (resolved.mode !== 'host') {
+    throw new Error('bootstrapHostAttachSession is only supported for host mode.');
+  }
+  if (!resolved.listenerCode?.trim()) {
+    throw new Error('listenerCode is required for host attach bootstrap.');
+  }
+
+  const session = createSessionState(resolved);
+  let policy = loadOrCreatePolicy(resolved, session);
+  const explicitBrokerEndpoint = getExplicitBrokerEndpoint(resolved.env);
+  if (explicitBrokerEndpoint && policy.brokerEndpoint !== explicitBrokerEndpoint) {
+    policy = {
+      ...policy,
+      brokerEndpoint: explicitBrokerEndpoint,
+      ...(resolved.runnerKind ? { runnerKind: resolved.runnerKind } : {}),
+      ...(resolved.runnerCommand ? { runnerCommand: resolved.runnerCommand } : {}),
+    };
+    writePolicyFile(session, policy);
+  }
+
+  persistRoleTokenBackup(session, 'host');
+  writeSessionMetadata(session, {
+    status: 'connected',
+    role: 'host',
+    code: null,
+    lastEvent: 'waiting_for_local_task',
+    lastReplySignal: null,
+  });
+  writeSessionArtifact(resolved, session, {
+    status: 'connected',
+    attachedListenerCode: resolved.listenerCode,
+    inviteCode: null,
+    ...(resolved.runnerKind ? { runnerKind: resolved.runnerKind } : {}),
+    ...(resolved.runnerCommand ? { runnerCommand: resolved.runnerCommand } : {}),
+    headless: resolved.headless,
+    pid: null,
+    lastEvent: 'waiting_for_local_task',
+    error: null,
+    ...(explicitBrokerEndpoint ? { brokerEndpoint: explicitBrokerEndpoint } : {}),
+  });
+
+  return session;
+}
+
 function resolveOptions(options: SupervisorOptions): MutableSupervisorOptions {
   if (!options.agentLabel.trim()) {
     throw new Error('agentLabel is required.');
@@ -1814,10 +1860,12 @@ function installSignalCleanup(options: MutableSupervisorOptions, session: Sessio
 
   process.on('SIGINT', handler);
   process.on('SIGTERM', handler);
+  process.on('SIGHUP', handler);
 
   return () => {
     process.off('SIGINT', handler);
     process.off('SIGTERM', handler);
+    process.off('SIGHUP', handler);
   };
 }
 

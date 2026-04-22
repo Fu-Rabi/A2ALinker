@@ -6,6 +6,8 @@ interface WaiterEntry {
   timer: NodeJS.Timeout;
 }
 
+export type WaiterResolveStatus = 'resolved' | 'stale' | 'missing';
+
 export class WaiterRegistry {
   private readonly waiters = new Map<string, WaiterEntry>();
 
@@ -36,6 +38,25 @@ export class WaiterRegistry {
     this.waiters.delete(waiterKey);
     entry.res.send(text);
     return true;
+  }
+
+  public resolveIfActive(waiterKey: string, text: string): WaiterResolveStatus {
+    const entry = this.waiters.get(waiterKey);
+    if (!entry) {
+      return 'missing';
+    }
+
+    const req = (entry.res as Response & { req?: { aborted?: boolean; destroyed?: boolean } }).req;
+    if (entry.res.destroyed || entry.res.writableEnded || req?.aborted || req?.destroyed) {
+      clearTimeout(entry.timer);
+      this.waiters.delete(waiterKey);
+      return 'stale';
+    }
+
+    clearTimeout(entry.timer);
+    this.waiters.delete(waiterKey);
+    entry.res.send(text);
+    return 'resolved';
   }
 
   public clear(waiterKey: string): void {

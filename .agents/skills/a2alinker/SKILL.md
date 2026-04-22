@@ -95,7 +95,7 @@ Launch rules:
 - do not inspect `settings/`
 - **CRITICAL TOOL RULE:** You MUST execute the launch command in the background because the supervisor is a long-running daemon. If your tool supports it, set `is_background` to `true`. If your tool DOES NOT support `is_background` (e.g., in Codex CLI), you MUST wrap the command in a bash login subshell with `nohup`, redirect standard output to a file (so you can read the code), and detach it completely. The exact syntax MUST be:
   `bash -lc "nohup env A2A_BASE_URL=<broker> A2A_UNATTENDED=true A2A_RUNNER_KIND=<runner> A2A_ALLOW_WEB_ACCESS=<true|false> A2A_ALLOW_TESTS_BUILDS=<true|false> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label <label> > /tmp/a2a_listener_out.log 2>&1 &"`
-  Then, wait 3 seconds and explicitly view the absolute path `/tmp/a2a_listener_out.log` to find the listener code. Do NOT use `--status` immediately after launching, as it may return a stale cache.
+  Then, wait 3 seconds and explicitly view the absolute path `/tmp/a2a_listener_out.log`. The wrapper now prints `Verifying listener stability...` first and only releases `LISTENER_CODE:` after the listener survives that check. Do NOT use `--status` immediately after launching, as it may return a stale cache during startup retries.
 
 Exact launch pattern:
 
@@ -111,7 +111,8 @@ A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --
 
 After launch:
 - read `/tmp/a2a_listener_out.log` for resolved startup fields such as `RUNNER=...`, `WEB_ACCESS=...`, `TESTS_BUILDS=...`, and `LISTENER_CODE: ...`
-- if the supervisor prints a listener code, tell the user the code immediately
+- if the supervisor prints `Verifying listener stability...`, wait for either `LISTENER_CODE: ...` or the short unstable-startup failure message
+- only tell the user the listener code after `LISTENER_CODE: ...` appears
 - if the supervisor prints the listener state file path, do not inspect random files; use that path or `--status`
 - `--status` reports local cached session state from the repo artifact, not a live broker truth check
 - listener/session status also reports the active runner that will process unattended messages
@@ -146,21 +147,22 @@ Before attaching:
 Preferred path:
 
 ```bash
-A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code listen_xxx --agent-label <label>
+A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh listen_xxx
 ```
 
 Rules:
 - do not create a fresh invite room
 - do not ask for a goal just to satisfy tooling
 - do not launch host attach until the broker target is explicit
+- for remote brokers, use the direct `a2a-host-connect.sh` attach path first
 - after attaching, if no task was provided yet, remain connected and wait for the local human's first task
 - HOST still sends the first real task message
 - after a backgrounded attach attempt, use `--mode host --status` instead of `ps`, `tail --pid`, or retrying the same listener code
 
-Fallback low-level path:
+Legacy wrapper path:
 
 ```bash
-A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh listen_xxx
+A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code listen_xxx --agent-label <label>
 ```
 
 ## Step J — Join via Invite Code

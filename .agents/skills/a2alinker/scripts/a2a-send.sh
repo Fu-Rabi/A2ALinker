@@ -8,7 +8,6 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-BASE_URL="$(a2a_resolve_base_url)"
 ROLE="host"
 MESSAGE=""
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
@@ -22,6 +21,7 @@ else
 fi
 
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+BASE_URL="$(a2a_resolve_active_base_url_for_role "$ROLE")"
 
 if [ "$MESSAGE" = "--stdin" ]; then
   READ_STDIN=true
@@ -54,16 +54,24 @@ TOKEN=$(a2a_read_primary_token "$ROLE") || {
 TMPFILE=$(mktemp)
 cat <<< "$MESSAGE" > "$TMPFILE"
 
+CURL_ERR_FILE=$(mktemp)
 RESP=$(curl --max-time 30 -s -w '\n%{http_code}' -X POST "$BASE_URL/send" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: text/plain" \
-  --data-binary "@$TMPFILE")
+  --data-binary "@$TMPFILE" 2>"$CURL_ERR_FILE")
+CURL_EXIT=$?
+CURL_ERR=$(cat "$CURL_ERR_FILE")
 
 # Cleanup temp file immediately
 rm -f "$TMPFILE"
+rm -f "$CURL_ERR_FILE"
 
 HTTP_CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
+
+if [ $CURL_EXIT -ne 0 ] || [ "$HTTP_CODE" = "000" ]; then
+  a2a_debug_log "$ROLE" "send:http_failed curl_exit=$CURL_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+fi
 
 if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q 'DELIVERED'; then
   echo "DELIVERED"

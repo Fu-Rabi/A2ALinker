@@ -1,3 +1,4 @@
+import http from 'http';
 import request from 'supertest';
 import { renderAdminClosedMessage } from '../src/broker-messages';
 import { createRuntimeConfig } from '../src/config';
@@ -50,6 +51,28 @@ describe('HTTP runtime upgrades', () => {
     expect(waiters.register('lookup_test', { token: 'tok_test', res, timer })).toBe(false);
     expect(waiters.resolve('lookup_test', 'resolved')).toBe(true);
     expect(sent).toEqual(['resolved']);
+    clearTimeout(timer);
+  });
+
+  it('drops stale waiters without consuming the queued message', () => {
+    const waiters = new WaiterRegistry();
+    const sent: string[] = [];
+    const res = {
+      destroyed: true,
+      writableEnded: false,
+      req: {
+        aborted: true,
+        destroyed: true,
+      },
+      send: (text: string) => {
+        sent.push(text);
+      },
+    } as unknown as Parameters<WaiterRegistry['register']>[1]['res'];
+    const timer = setTimeout(() => undefined, 1000);
+
+    expect(waiters.register('lookup_test', { token: 'tok_test', res, timer })).toBe(true);
+    expect(waiters.resolveIfActive('lookup_test', 'resolved')).toBe('stale');
+    expect(sent).toEqual([]);
     clearTimeout(timer);
   });
 
@@ -172,6 +195,127 @@ describe('HTTP runtime upgrades', () => {
       expect(waitRes.status).toBe(200);
       expect(waitRes.text).toBe(renderAdminClosedMessage());
     } finally {
+      await runtime.close();
+    }
+  });
+
+  it('preserves a message when the prior /wait was aborted before wake delivery', async () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'test',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'w'.repeat(32),
+      WAIT_TIMEOUT_MS: '1000',
+      WAITER_TTL_MS: '5000',
+      HTTP_BIND_HOST: '127.0.0.1',
+      HTTP_PORT: '3118',
+    });
+    const store = new MemoryBrokerStore(config);
+    let runtimeWakeHandler: ((event: WakeEvent) => Promise<void> | void) | null = null;
+    const wakeBus: WakeBus = {
+      async start(handler): Promise<void> {
+        runtimeWakeHandler = handler;
+      },
+      async publish(event: WakeEvent): Promise<void> {
+        if (runtimeWakeHandler) {
+          await runtimeWakeHandler(event);
+        }
+      },
+      async close(): Promise<void> {
+        return;
+      },
+    };
+    const runtime = createHttpRuntime({
+      config,
+      runtimeLogger: logger,
+      store,
+      waiters: new WaiterRegistry(),
+      wakeBus,
+    });
+
+    const httpRequest = (
+      method: string,
+      path: string,
+      body?: string,
+      token?: string,
+      contentType: string = 'text/plain',
+    ): Promise<{ status: number; text: string }> => new Promise((resolve, reject) => {
+      const headers: Record<string, string | number> = {};
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      if (body !== undefined) {
+        headers['Content-Type'] = contentType;
+        headers['Content-Length'] = Buffer.byteLength(body);
+      }
+      const req = http.request({
+        method,
+        host: '127.0.0.1',
+        port: 3118,
+        path,
+        headers,
+      }, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, text: data });
+        });
+      });
+      req.on('error', reject);
+      if (body !== undefined) {
+        req.write(body);
+      }
+      req.end();
+    });
+
+    let server: http.Server | null = null;
+    try {
+      await runtime.initialize();
+      server = http.createServer(runtime.app);
+      await new Promise<void>((resolve, reject) => {
+        server?.once('error', reject);
+        server?.listen(3118, '127.0.0.1', () => resolve());
+      });
+
+      const setup = await httpRequest('POST', '/setup', JSON.stringify({ type: 'listener', headless: true }), undefined, 'application/json');
+      const setupBody = JSON.parse(setup.text) as { token: string; code: string };
+      const joinToken = setupBody.token;
+      const hostJoin = await httpRequest('POST', `/register-and-join/${setupBody.code}`);
+      const hostToken = (JSON.parse(hostJoin.text) as { token: string }).token;
+
+      await httpRequest('GET', '/wait', undefined, joinToken);
+
+      const abortedWait = http.request({
+        method: 'GET',
+        host: '127.0.0.1',
+        port: 3118,
+        path: '/wait',
+        headers: {
+          Authorization: `Bearer ${joinToken}`,
+        },
+      });
+      abortedWait.on('error', () => undefined);
+      abortedWait.end();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      abortedWait.destroy();
+
+      const send = await httpRequest('POST', '/send', 'Recovered after aborted wait [OVER]', hostToken);
+      const recovered = await httpRequest('GET', '/wait', undefined, joinToken);
+
+      expect(send.status).toBe(200);
+      expect(send.text).toBe('DELIVERED');
+      expect(recovered.status).toBe(200);
+      expect(recovered.text).toContain('Recovered after aborted wait');
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        if (!server) {
+          resolve();
+          return;
+        }
+        server.close((error) => error ? reject(error) : resolve());
+      });
       await runtime.close();
     }
   });

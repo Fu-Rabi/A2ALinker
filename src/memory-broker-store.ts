@@ -2,6 +2,7 @@ import {
   BrokerMetricsSnapshot,
   BrokerStore,
   HeadlessUpdateStatus,
+  InboxDelivery,
   InvalidationResult,
   JoinSessionResult,
   LeaveSessionResult,
@@ -325,7 +326,7 @@ export class MemoryBrokerStore implements BrokerStore {
     return 'ok';
   }
 
-  public async consumeInbox(token: string): Promise<string | null> {
+  public async consumeInboxMessage(token: string): Promise<InboxDelivery | null> {
     this.cleanupExpired();
     const inbox = this.inboxes.get(token);
     if (!inbox || inbox.length === 0) {
@@ -351,7 +352,26 @@ export class MemoryBrokerStore implements BrokerStore {
       }
     }
 
-    return message.text;
+    return {
+      text: message.text,
+      closeAfterDelivery: message.closeAfterDelivery,
+    };
+  }
+
+  public async consumeInbox(token: string): Promise<string | null> {
+    const message = await this.consumeInboxMessage(token);
+    return message?.text ?? null;
+  }
+
+  public async requeueInboxMessageFront(token: string, message: InboxDelivery): Promise<void> {
+    this.cleanupExpired();
+    const inbox = this.inboxes.get(token) ?? [];
+    inbox.unshift({
+      text: message.text,
+      closeAfterDelivery: message.closeAfterDelivery,
+      expiresAt: Date.now() + this.config.inboxTtlMs,
+    });
+    this.inboxes.set(token, inbox);
   }
 
   public async incrementWaits(): Promise<void> {
