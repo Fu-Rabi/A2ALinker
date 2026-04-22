@@ -332,7 +332,7 @@ bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --agent-label Codi
 ```
 
-The detached startup log now emits resolved startup state and the listener code directly. When launching in the background, inspect the outer log first:
+The detached startup log now emits resolved startup state first, then performs a short stability check before releasing the listener code. When launching in the background, inspect the outer log first:
 
 ```bash
 nohup env \
@@ -359,9 +359,26 @@ RUNNER=codex
 WEB_ACCESS=true
 TESTS_BUILDS=true
 DEBUG=true
+Verifying listener stability...
 LISTENER_CODE: listen_xxx
 STATE_FILE: /path/to/.a2a-listener-session.json
 ```
+
+If startup is unstable, the wrapper retries automatically up to 3 attempts with a fresh listener code each time. Failed attempts do not release a code. After 3 failed attempts, the outer log ends with:
+
+```text
+Listener startup was unstable across 3 attempts, so no code was released. Please try again in a fresh session.
+```
+
+The public log path `/tmp/a2a_listener_out.log` points to the successful attempt log. If startup fails before code release, per-attempt logs may also exist as:
+
+```text
+/tmp/a2a_listener_out.<pid>.attempt1.log
+/tmp/a2a_listener_out.<pid>.attempt2.log
+/tmp/a2a_listener_out.<pid>.attempt3.log
+```
+
+Those attempt logs are the right place to diagnose pre-startup crashes such as a broken local `dist/a2a-supervisor.js`.
 
 Repo-local debug mode can be enabled by creating `.a2a-debug-mode` in the project root. Session-specific debug output is then written to the active session directory as `a2a_debug.log`.
 
