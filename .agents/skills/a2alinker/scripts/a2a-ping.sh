@@ -6,9 +6,9 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+BASE_URL="$(a2a_resolve_active_base_url_for_role "$ROLE")"
 
 TOKEN=$(a2a_read_primary_token "$ROLE") || {
   echo "PING_ERROR: No token found at $TOKEN_FILE"

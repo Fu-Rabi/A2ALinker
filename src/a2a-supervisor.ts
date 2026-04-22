@@ -1,4 +1,5 @@
 import {
+  bootstrapHostAttachSession,
   getHostSessionArtifactPath,
   getListenerSessionArtifactPath,
   readHostSessionArtifact,
@@ -20,6 +21,7 @@ interface CliArgs {
   sessionRoot?: string;
   plainMode?: boolean;
   timestampEnabled?: boolean;
+  bootstrapHostAttach?: boolean;
   status?: boolean;
   help?: boolean;
 }
@@ -36,7 +38,7 @@ function renderUsage(): string {
     '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label codex',
     '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status',
     '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --status',
-    '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --listener-code listen_xxx --agent-label codex',
+    '  A2A_BASE_URL=https://broker.example bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh listen_xxx',
   ].join('\n');
 }
 
@@ -111,6 +113,9 @@ function parseArgs(argv: string[]): CliArgs {
   if (args.has('--plain')) {
     parsed.plainMode = true;
   }
+  if (args.has('--bootstrap-host-attach')) {
+    parsed.bootstrapHostAttach = true;
+  }
   if (args.has('--no-timestamps')) {
     parsed.timestampEnabled = false;
   }
@@ -134,6 +139,11 @@ async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed.help) {
     console.log(renderUsage());
+    return;
+  }
+  if (parsed.bootstrapHostAttach) {
+    const session = await bootstrapHostAttachSession(parsed as Parameters<typeof bootstrapHostAttachSession>[0]);
+    console.log(`SESSION_DIR: ${session.sessionDir}`);
     return;
   }
   if (parsed.status) {

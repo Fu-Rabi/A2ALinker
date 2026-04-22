@@ -3,6 +3,7 @@ import {
   BrokerMetricsSnapshot,
   BrokerStore,
   HeadlessUpdateStatus,
+  InboxDelivery,
   InvalidationResult,
   JoinSessionResult,
   LeaveSessionResult,
@@ -319,7 +320,7 @@ export class RedisBrokerStore implements BrokerStore {
     return 'ok';
   }
 
-  public async consumeInbox(token: string): Promise<string | null> {
+  public async consumeInboxMessage(token: string): Promise<InboxDelivery | null> {
     const payload = await this.client.lPop(this.inboxKey(token));
     if (!payload) {
       return null;
@@ -338,7 +339,26 @@ export class RedisBrokerStore implements BrokerStore {
       }
     }
 
-    return message.text;
+    return {
+      text: message.text,
+      closeAfterDelivery: message.closeAfterDelivery,
+    };
+  }
+
+  public async consumeInbox(token: string): Promise<string | null> {
+    const message = await this.consumeInboxMessage(token);
+    return message?.text ?? null;
+  }
+
+  public async requeueInboxMessageFront(token: string, message: InboxDelivery): Promise<void> {
+    await this.client.lPush(
+      this.inboxKey(token),
+      JSON.stringify({
+        text: message.text,
+        closeAfterDelivery: message.closeAfterDelivery,
+      } satisfies InboxMessage),
+    );
+    await this.client.pExpire(this.inboxKey(token), this.config.inboxTtlMs);
   }
 
   public async incrementWaits(): Promise<void> {

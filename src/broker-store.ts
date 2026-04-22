@@ -30,6 +30,11 @@ export interface RegisterAndJoinResult extends JoinSessionResult {
   token: string;
 }
 
+export interface InboxDelivery {
+  text: string;
+  closeAfterDelivery: boolean;
+}
+
 export type HeadlessUpdateStatus = 'ok' | 'unauthorized' | 'not_in_room' | 'forbidden';
 
 export type SendMessageResult =
@@ -82,7 +87,9 @@ export interface BrokerStore {
   updateRoomHeadless(token: string, headless: boolean): Promise<HeadlessUpdateStatus>;
   sendMessage(token: string, body: string): Promise<SendMessageResult>;
   touchParticipant(token: string): Promise<TouchParticipantResult>;
+  consumeInboxMessage(token: string): Promise<InboxDelivery | null>;
   consumeInbox(token: string): Promise<string | null>;
+  requeueInboxMessageFront(token: string, message: InboxDelivery): Promise<void>;
   incrementWaits(): Promise<void>;
   registerWaiterOwner(token: string, instanceId: string, ttlMs: number): Promise<void>;
   clearWaiterOwner(token: string, instanceId: string): Promise<void>;

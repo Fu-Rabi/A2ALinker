@@ -6,10 +6,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 WAIT_POLL_TIMEOUT="${A2A_WAIT_POLL_TIMEOUT:-15}"
+BASE_URL="$(a2a_resolve_active_base_url_for_role "$ROLE")"
 
 listener_closed_locally() {
   local artifact_path status
@@ -46,12 +46,20 @@ a2a_debug_log "$ROLE" "wait:start timeout=${WAIT_POLL_TIMEOUT}s base_url=$BASE_U
 # Use shorter client-side long-polls so a missed broker wake does not strand a
 # queued reply for the full server wait timeout. The next /wait call will pick
 # up any message already sitting in the inbox.
+CURL_WAIT_ERR_FILE=$(mktemp)
 RESP=$(curl --max-time "$WAIT_POLL_TIMEOUT" -s -w '\n%{http_code}' --no-buffer \
   "$BASE_URL/wait" \
-  -H "Authorization: Bearer $TOKEN")
+  -H "Authorization: Bearer $TOKEN" 2>"$CURL_WAIT_ERR_FILE")
+CURL_WAIT_EXIT=$?
+CURL_WAIT_ERR=$(cat "$CURL_WAIT_ERR_FILE")
+rm -f "$CURL_WAIT_ERR_FILE"
 
 HTTP_CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
+
+if [ $CURL_WAIT_EXIT -ne 0 ] || [ "$HTTP_CODE" = "000" ]; then
+  a2a_debug_log "$ROLE" "wait:http_failed curl_exit=$CURL_WAIT_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_WAIT_ERR")"
+fi
 
 if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q '^MESSAGE_RECEIVED'; then
   a2a_debug_log "$ROLE" "wait:http code=$HTTP_CODE first_line=$(printf '%s' "$BODY" | head -n 1)"
@@ -90,9 +98,13 @@ if [ "$HTTP_CODE" = "400" ] && echo "$BODY" | grep -q 'Not in a room'; then
 fi
 
 # On timeout or error, auto-ping to give the SKILL actionable context
+CURL_PING_ERR_FILE=$(mktemp)
 PING=$(curl --max-time 5 -s -w '\n%{http_code}' \
   "$BASE_URL/ping" \
-  -H "Authorization: Bearer $TOKEN")
+  -H "Authorization: Bearer $TOKEN" 2>"$CURL_PING_ERR_FILE")
+PING_EXIT=$?
+PING_ERR=$(cat "$CURL_PING_ERR_FILE")
+rm -f "$CURL_PING_ERR_FILE"
 PING_CODE=$(echo "$PING" | tail -1)
 PING_BODY=$(echo "$PING" | sed '$d')
 
@@ -106,7 +118,7 @@ elif [ "$PING_CODE" = "200" ]; then
   echo "TIMEOUT_ROOM_ALIVE last_seen_ms=${LAST_SEEN:-0}"
   exit 0
 else
-  a2a_debug_log "$ROLE" "wait:ping code=$PING_CODE failed=1"
+  a2a_debug_log "$ROLE" "wait:ping code=$PING_CODE failed=1 curl_exit=$PING_EXIT body_present=$([ -n "$PING_BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$PING_ERR")"
   echo "TIMEOUT_PING_FAILED"
   exit 1
 fi

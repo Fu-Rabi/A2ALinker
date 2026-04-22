@@ -7,7 +7,6 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-BASE_URL="$(a2a_resolve_base_url)"
 ROLE="${1:-host}"
 ORIGINAL_ROLE="$ROLE"
 case "$ROLE" in
@@ -21,6 +20,7 @@ case "$ROLE" in
     exit 1
     ;;
 esac
+BASE_URL="$(a2a_resolve_active_base_url_for_role "$ROLE")"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 BACKUP_TOKEN_FILE=""
 ARTIFACT_PATH=""
@@ -75,5 +75,6 @@ rm -f "$TOKEN_FILE"
 if [ -n "$BACKUP_TOKEN_FILE" ]; then
   rm -f "$BACKUP_TOKEN_FILE"
 fi
+a2a_clear_role_base_url "$ROLE"
 echo "LEFT"
 exit 0

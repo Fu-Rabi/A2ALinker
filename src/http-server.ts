@@ -90,13 +90,21 @@ export function createHttpRuntime({
       return;
     }
 
-    const message = await store.consumeInbox(token);
+    const message = await store.consumeInboxMessage(token);
     if (!message) {
       return;
     }
 
-    await store.clearWaiterOwner(token, config.instanceId);
-    waiters.resolve(recipientLookupId, message);
+    const resolved = waiters.resolveIfActive(recipientLookupId, message.text);
+    if (resolved === 'resolved') {
+      await store.clearWaiterOwner(token, config.instanceId);
+      return;
+    }
+
+    await store.requeueInboxMessageFront(token, message);
+    if (resolved === 'stale') {
+      await store.clearWaiterOwner(token, config.instanceId);
+    }
   };
 
   const enforceAnonymousRateLimit = async (
