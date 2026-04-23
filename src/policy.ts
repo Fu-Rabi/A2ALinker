@@ -58,16 +58,25 @@ const FORBIDDEN_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\brm\s+-rf\b/i, reason: 'destructive shell commands are forbidden' },
   { pattern: /\b(approval_policy|autoapprove|auto-approve|full-auto|allowlist|permission|settings\.json|config\.toml)\b/i, reason: 'permission changes are forbidden' },
   { pattern: /\b(~\/|\/etc\/|\/var\/|\/Users\/|\/home\/|\.ssh\/)\b/i, reason: 'access outside the approved workspace is forbidden' },
-  { pattern: /\b(a2a_server|broker\.a2alinker\.net|change broker|switch broker)\b/i, reason: 'broker changes are forbidden during a session' },
 ];
+
+const BROKER_DIRECT_MUTATION_PATTERN = /\b(?:set|change|switch|replace|override|point|redirect|reconfigure)\s+(?:the\s+)?(?:broker(?:\s+(?:endpoint|server|target))?|session(?:\s+broker)?|connection(?:\s+broker)?|relay)\b/i;
+const BROKER_ENV_SETTING_PATTERN = /\b(?:set|export|change|override)\s+(?:A2A_BASE_URL|A2A_SERVER)\b(?:\s*=|\s+to\b)/i;
+const BROKER_CONFIG_MUTATION_PATTERN = /\b(?:edit|modify|update|change|rewrite|set)\b[^.!?\n]{0,60}\b(?:config|configuration|settings|\.env|env file|environment variable|shell profile)\b[^.!?\n]{0,80}\b(?:broker|A2A_BASE_URL|A2A_SERVER)\b/i;
+const BROKER_COMMAND_MUTATION_PATTERN = /\b(?:run|execute|launch|invoke|call)\b[^.!?\n]{0,140}\b(?:A2A_BASE_URL|A2A_SERVER)\s*=/i;
+const NEGATED_BROKER_MUTATION_PATTERN = /\b(?:do not|don't|dont|never|without)\s+(?:\w+\s+){0,2}(?:change|switch|replace|override|point|redirect|reconfigure|set|export)\b[^.!?\n]{0,60}\b(?:broker|A2A_BASE_URL|A2A_SERVER)\b/i;
 
 const COMMAND_HINTS = /\b(run|execute|launch|invoke)\b|\bshell command\b/i;
 const TEST_BUILD_HINTS = /\b(test|tests|jest|npm run build|npm run test|tsc|build)\b/i;
 const REPO_EDIT_HINTS = /\b(edit|modify|patch|rewrite|update|change|fix|refactor|implement)\b/i;
 const READ_HINTS = /\b(read|inspect|review|open|check|look at|show|view|cat)\b/i;
 const FILE_HINTS = /\b(file|files|source|code|repo|repository|module|package|config)\b/i;
-const WEB_HINTS = /\b(web|website|webpage|internet|online|browse|search|google|url|link|curl|wget|weather|forecast|docs|documentation|news|latest|current)\b/i;
-const WEB_ACTION_HINTS = /\b(check|look up|lookup|find|search|browse|open|visit|fetch|get|read|review|research|verify|confirm|use|call)\b/i;
+const WEB_HINTS = /\b(web|website|webpage|internet|online|url|link|weather|forecast|news)\b/i;
+const WEB_ACTION_HINTS = /\b(check|look up|lookup|find|search|browse|open|visit|fetch|get|use|call)\b/i;
+const URL_DIRECT_WEB_ACTION_PATTERN = /\b(?:check|look up|lookup|find|search|browse|open|visit|fetch|get|curl|wget|call)\b[^.!?\n]{0,80}https?:\/\//i;
+const URL_CONTEXTUAL_WEB_ACTION_PATTERN = /\b(?:read|review|research|verify|confirm|use)\b[^.!?\n]{0,40}\b(?:at|from|via|using|on)\b[^.!?\n]{0,20}https?:\/\//i;
+const CURRENT_INFO_HINTS = /\b(current|latest|today|now)\b/i;
+const NETWORK_FETCH_HINTS = /\b(curl|wget)\b/i;
 const NEGATED_EXECUTION_HINTS = /\b(do not|don't|dont|without|instead of)\s+(?:\w+\s+){0,2}(run|execute|launch|invoke)\b/i;
 
 export function createSessionPolicy(input: {
@@ -193,6 +202,15 @@ export function evaluateIncomingMessage(
     }
   }
 
+  if (isBrokerMutationRequest(message)) {
+    return {
+      decision: 'forbid',
+      reason: 'broker changes are forbidden during a session',
+      normalizedSummary: normalized.summary,
+      grantCandidates: [],
+    };
+  }
+
   if (!hydratedPolicy.allowRemoteTriggerWithinScope) {
     return {
       decision: 'require_approval',
@@ -260,6 +278,14 @@ export function normalizeIncomingRequest(
       kind: 'test_build',
       value: 'test_build',
       label: 'test/build commands',
+    });
+  }
+
+  if (readWorkspaceRequested && !repoEditRequested && !policy.allowRepoEdits) {
+    grantCandidates.push({
+      kind: 'read_workspace',
+      value: 'read_workspace',
+      label: 'read files inside the workspace',
     });
   }
 
@@ -353,7 +379,10 @@ function isGeneralCommandExecutionRequest(message: string): boolean {
 
 function extractExactCommand(message: string, allowedCommands: string[]): string | null {
   const fencedOrInlineCommand = message.match(/`([^`\n]+)`/);
-  if (fencedOrInlineCommand?.[1]) {
+  const executionContextRequested = (isGeneralCommandExecutionRequest(message) || TEST_BUILD_HINTS.test(message))
+    && !NEGATED_EXECUTION_HINTS.test(message);
+
+  if (fencedOrInlineCommand?.[1] && executionContextRequested) {
     return normalizeCommand(fencedOrInlineCommand[1]);
   }
 
@@ -403,12 +432,34 @@ function dedupeGrantCandidates(grantCandidates: SessionGrantCandidate[]): Sessio
   });
 }
 
+function isBrokerMutationRequest(message: string): boolean {
+  if (NEGATED_BROKER_MUTATION_PATTERN.test(message)) {
+    return false;
+  }
+  if (BROKER_DIRECT_MUTATION_PATTERN.test(message)) {
+    return true;
+  }
+  if (BROKER_ENV_SETTING_PATTERN.test(message)) {
+    return true;
+  }
+  if (BROKER_CONFIG_MUTATION_PATTERN.test(message)) {
+    return true;
+  }
+  return BROKER_COMMAND_MUTATION_PATTERN.test(message) && !NEGATED_EXECUTION_HINTS.test(message);
+}
+
 function isWebAccessRequested(message: string): boolean {
-  if (/https?:\/\//i.test(message)) {
+  if (URL_DIRECT_WEB_ACTION_PATTERN.test(message) || URL_CONTEXTUAL_WEB_ACTION_PATTERN.test(message)) {
+    return true;
+  }
+  if (NETWORK_FETCH_HINTS.test(message) && isGeneralCommandExecutionRequest(message)) {
     return true;
   }
   if (/\bcurrent weather\b/i.test(message) || /\blatest news\b/i.test(message)) {
     return true;
   }
-  return WEB_HINTS.test(message) && (WEB_ACTION_HINTS.test(message) || /\b(current|latest|today|now)\b/i.test(message));
+  if (CURRENT_INFO_HINTS.test(message) && WEB_HINTS.test(message)) {
+    return true;
+  }
+  return WEB_HINTS.test(message) && WEB_ACTION_HINTS.test(message);
 }

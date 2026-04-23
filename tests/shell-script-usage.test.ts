@@ -36,6 +36,8 @@ describe('A2A shell script usage guards', () => {
         fs.rmSync('/tmp/a2a_join_base_url', { force: true });
         fs.rmSync('/tmp/a2a_host_debug.log', { force: true });
         fs.rmSync('/tmp/a2a_join_debug.log', { force: true });
+        fs.rmSync('/tmp/a2a_host_token', { force: true });
+        fs.rmSync('/tmp/a2a_join_token', { force: true });
     });
 
     afterEach(() => {
@@ -43,6 +45,8 @@ describe('A2A shell script usage guards', () => {
         fs.rmSync('/tmp/a2a_join_base_url', { force: true });
         fs.rmSync('/tmp/a2a_host_debug.log', { force: true });
         fs.rmSync('/tmp/a2a_join_debug.log', { force: true });
+        fs.rmSync('/tmp/a2a_host_token', { force: true });
+        fs.rmSync('/tmp/a2a_join_token', { force: true });
     });
 
     it('forwards unattended listener intent to the supervisor as --headless true', () => {
@@ -680,6 +684,84 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
         expect(result.stdout).toContain('a2a-host-connect.sh listen_demo123');
     });
 
+    it('reports the broker endpoint and curl exit code when remote join connect cannot reach the relay', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-connect-error-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_join_token';
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.rmSync(tokenPath, { force: true });
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+echo 'Failed to connect to broker.a2alinker.net port 443' >&2
+exit 7
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-join-connect.sh', 'invite_demo123'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('ERROR: Cannot reach A2A Linker server at https://broker.a2alinker.net (curl exit 7)');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+    });
+
+    it('retries a transient remote join connect once on retryable transport errors', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-connect-retry-'));
+        const binDir = path.join(root, 'bin');
+        const statePath = path.join(root, 'join-count');
+        const tokenPath = '/tmp/a2a_join_token';
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.rmSync(tokenPath, { force: true });
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+COUNT=0
+if [ -f "${statePath}" ]; then
+  COUNT="$(cat "${statePath}")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${statePath}"
+if [ "$COUNT" -eq 1 ]; then
+  echo 'Could not resolve host: broker.a2alinker.net' >&2
+  exit 6
+fi
+  printf '%s' '{"token":"tok_a1b2c3","roomName":"room_demo","role":"join","headless":true,"status":"(2/2 connected)"}'
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-join-connect.sh', 'invite_demo123'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('ROLE: join');
+        expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('2');
+        expect(fs.readFileSync(tokenPath, 'utf8').trim()).toBe('tok_a1b2c3');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+    });
+
     it('tells the host to send the first message after redeeming a listener code', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-usage-'));
         const binDir = path.join(root, 'bin');
@@ -723,6 +805,173 @@ printf '%s' '{"token":"tok_abcdef123456","roomName":"room_demo","role":"host","h
         fs.rmSync(hostArtifact.sessionDir, { recursive: true, force: true });
         fs.rmSync(hostArtifactPath, { force: true });
         fs.rmSync('/tmp/a2a_host_token', { force: true });
+    });
+
+    it('reports the broker endpoint and curl exit code when remote host attach cannot reach the relay', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-attach-error-'));
+        const binDir = path.join(root, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+echo 'Could not resolve host: broker.a2alinker.net' >&2
+exit 6
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-host-connect.sh', 'listen_demo123'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('ERROR: Cannot reach A2A Linker server at https://broker.a2alinker.net (curl exit 6)');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('retries a transient remote host attach once and only leaves the old token after the later success', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-attach-retry-'));
+        const binDir = path.join(root, 'bin');
+        const callLogPath = path.join(root, 'curl-calls.log');
+        const statePath = path.join(root, 'register-count');
+        const tokenPath = '/tmp/a2a_host_token';
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+if printf '%s ' "$@" | grep -q '/register-and-join/'; then
+  COUNT=0
+  if [ -f "${statePath}" ]; then
+    COUNT="$(cat "${statePath}")"
+  fi
+  COUNT=$((COUNT + 1))
+  echo "$COUNT" > "${statePath}"
+  printf 'register-%s\n' "$COUNT" >> "${callLogPath}"
+  if [ "$COUNT" -eq 1 ]; then
+    echo 'Could not resolve host: broker.a2alinker.net' >&2
+    exit 6
+  fi
+  printf '%s' '{"token":"tok_a1b2c4","roomName":"room_demo","role":"host","headless":false,"status":"(2/2 connected)"}'
+  exit 0
+fi
+if printf '%s ' "$@" | grep -q '/leave'; then
+  printf 'leave %s\n' "$*" >> "${callLogPath}"
+  exit 0
+fi
+exit 99
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-host-connect.sh', 'listen_demo123'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+            if (fs.existsSync(callLogPath) && fs.readFileSync(callLogPath, 'utf8').trim().split('\n').length >= 3) {
+                break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('ROLE: host');
+        expect(fs.readFileSync(tokenPath, 'utf8').trim()).toBe('tok_a1b2c4');
+
+        const callLog = fs.readFileSync(callLogPath, 'utf8').trim().split('\n');
+        expect(callLog[0]).toBe('register-1');
+        expect(callLog[1]).toBe('register-2');
+        expect(callLog[2]).toContain('/leave');
+        expect(callLog[2]).toContain('tok_existing123');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+    });
+
+    it('retries a transient remote host setup once and only leaves the old token after the later success', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-setup-retry-'));
+        const binDir = path.join(root, 'bin');
+        const callLogPath = path.join(root, 'curl-calls.log');
+        const statePath = path.join(root, 'setup-count');
+        const tokenPath = '/tmp/a2a_host_token';
+        const hostArtifactPath = path.join(process.cwd(), '.a2a-host-session.json');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+        fs.rmSync(hostArtifactPath, { force: true });
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+if printf '%s ' "$@" | grep -q '/setup'; then
+  COUNT=0
+  if [ -f "${statePath}" ]; then
+    COUNT="$(cat "${statePath}")"
+  fi
+  COUNT=$((COUNT + 1))
+  echo "$COUNT" > "${statePath}"
+  printf 'setup-%s\n' "$COUNT" >> "${callLogPath}"
+  if [ "$COUNT" -eq 1 ]; then
+    echo 'Could not resolve host: broker.a2alinker.net' >&2
+    exit 6
+  fi
+  printf '%s' '{"token":"tok_a1b2c4","invite":"invite_demo123","role":"host","headless":false}'
+  exit 0
+fi
+if printf '%s ' "$@" | grep -q '/leave'; then
+  printf 'leave %s\n' "$*" >> "${callLogPath}"
+  exit 0
+fi
+exit 99
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-host-connect.sh', '', 'false'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+            if (fs.existsSync(callLogPath) && fs.readFileSync(callLogPath, 'utf8').trim().split('\n').length >= 3) {
+                break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('INVITE_CODE: invite_demo123');
+        expect(fs.readFileSync(tokenPath, 'utf8').trim()).toBe('tok_a1b2c4');
+
+        const callLog = fs.readFileSync(callLogPath, 'utf8').trim().split('\n');
+        expect(callLog[0]).toBe('setup-1');
+        expect(callLog[1]).toBe('setup-2');
+        expect(callLog[2]).toContain('/leave');
+        expect(callLog[2]).toContain('tok_existing123');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+        fs.rmSync(hostArtifactPath, { force: true });
     });
 
     it('accepts listen as an alias for the listener-side join token when closing', () => {
@@ -987,6 +1236,131 @@ printf 'DELIVERED\n200'
         fs.rmSync(tokenPath, { force: true });
     });
 
+    it('retries a transient remote send once on retryable transport errors', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-retry-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        const statePath = path.join(root, 'send-count');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+COUNT=0
+if [ -f "${statePath}" ]; then
+  COUNT="$(cat "${statePath}")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${statePath}"
+if [ "$COUNT" -eq 1 ]; then
+  echo 'Could not resolve host: broker.a2alinker.net' >&2
+  exit 6
+fi
+printf 'DELIVERED\\n200'
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-send.sh'), 'host', 'hello retry [OVER]'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('DELIVERED');
+        expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('2');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+    });
+
+    it('does not retry remote sends on curl timeout exit 28', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-timeout-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        const statePath = path.join(root, 'send-count');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+COUNT=0
+if [ -f "${statePath}" ]; then
+  COUNT="$(cat "${statePath}")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${statePath}"
+echo 'Operation timed out after 30000 milliseconds' >&2
+exit 28
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-send.sh'), 'host', 'hello timeout [OVER]'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('NOT_DELIVERED: Cannot reach A2A Linker server at https://broker.a2alinker.net (curl exit 28)');
+        expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('1');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+    });
+
+    it('does not retry remote sends on generic HTTP 000 responses', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-http000-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        const statePath = path.join(root, 'send-count');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+COUNT=0
+if [ -f "${statePath}" ]; then
+  COUNT="$(cat "${statePath}")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${statePath}"
+printf '\\n000'
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-send.sh'), 'host', 'hello http000 [OVER]'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('NOT_DELIVERED: A2A Linker send failed at https://broker.a2alinker.net (HTTP 000)');
+        expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('1');
+
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(tokenPath, { force: true });
+    });
+
     it('preserves the existing host token if a listener reconnect attempt fails', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-token-guard-'));
         const binDir = path.join(root, 'bin');
@@ -1105,6 +1479,88 @@ printf '{"room_alive":true,"partner_connected":true,"partner_last_seen_ms":0}\\n
 
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('WAIT_ALREADY_PENDING');
+
+        fs.unlinkSync(tokenPath);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('logs curl exit 28 long-poll timeouts separately from transport failures in wait-message.sh', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-wait-timeout-log-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        const debugLogPath = path.join(root, 'wait-debug.log');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+if printf '%s ' "$@" | grep -q '/wait'; then
+  echo 'Operation timed out after 15000 milliseconds' >&2
+  exit 28
+fi
+printf '{"room_alive":true,"partner_connected":true,"partner_last_seen_ms":12}\\n200'
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-wait-message.sh', 'host'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_DEBUG: '1',
+                    A2A_DEBUG_LOG: debugLogPath,
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        const debugLog = fs.readFileSync(debugLogPath, 'utf8');
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('TIMEOUT_ROOM_ALIVE last_seen_ms=12');
+        expect(debugLog).toContain('wait:http_timeout base_url=https://broker.a2alinker.net curl_exit=28');
+        expect(debugLog).not.toContain('wait:http_failed base_url=https://broker.a2alinker.net curl_exit=28');
+
+        fs.unlinkSync(tokenPath);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('logs real wait transport failures separately from expected timeout exits', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-wait-failure-log-'));
+        const binDir = path.join(root, 'bin');
+        const tokenPath = '/tmp/a2a_host_token';
+        const debugLogPath = path.join(root, 'wait-debug.log');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(tokenPath, 'tok_existing123', 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+echo 'Could not resolve host: broker.a2alinker.net' >&2
+exit 6
+`);
+
+        const result = spawnSync(
+            'bash',
+            ['.agents/skills/a2alinker/scripts/a2a-wait-message.sh', 'host'],
+            {
+                cwd: process.cwd(),
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_DEBUG: '1',
+                    A2A_DEBUG_LOG: debugLogPath,
+                },
+                encoding: 'utf8',
+            },
+        );
+
+        const debugLog = fs.readFileSync(debugLogPath, 'utf8');
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('TIMEOUT_PING_FAILED');
+        expect(debugLog).toContain('wait:http_failed base_url=https://broker.a2alinker.net curl_exit=6');
+        expect(debugLog).toContain('wait:ping_failed base_url=https://broker.a2alinker.net');
+        expect(debugLog).not.toContain('wait:http_timeout base_url=https://broker.a2alinker.net curl_exit=6');
 
         fs.unlinkSync(tokenPath);
         fs.rmSync(root, { recursive: true, force: true });

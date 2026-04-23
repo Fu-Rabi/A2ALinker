@@ -17,13 +17,20 @@ TOKEN=$(a2a_read_primary_token "$ROLE") || {
   exit 1
 }
 
-RESP=$(curl --max-time 10 -s -X POST "$BASE_URL/room-rule/headless" \
+CURL_ERR_FILE=$(mktemp)
+RESP=$(curl --max-time 10 -sS -X POST "$BASE_URL/room-rule/headless" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"headless\": $HEADLESS}")
+  -d "{\"headless\": $HEADLESS}" 2>"$CURL_ERR_FILE")
+CURL_EXIT=$?
+CURL_ERR=$(cat "$CURL_ERR_FILE")
+rm -f "$CURL_ERR_FILE"
 
-if [ $? -ne 0 ] || [ -z "$RESP" ]; then
-  echo "ERROR: Cannot reach A2A Linker server"
+if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
+  echo "ERROR: Cannot reach A2A Linker server at $BASE_URL (curl exit $CURL_EXIT)"
+  if [ -n "$CURL_ERR" ]; then
+    echo "DETAIL: $(a2a_debug_compact_text "$CURL_ERR")"
+  fi
   exit 1
 fi
 
