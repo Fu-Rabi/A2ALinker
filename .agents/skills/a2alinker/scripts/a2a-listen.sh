@@ -20,14 +20,20 @@ HEADLESS="${1:-false}"
 a2a_debug_log "join" "listen:start headless=$HEADLESS base_url=$BASE_URL"
 
 # One-shot setup: register + create room in 1 round-trip
-RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/setup" \
+CURL_ERR_FILE=$(mktemp)
+RESP=$(curl --max-time 15 -sS -X POST "$BASE_URL/setup" \
   -H "Content-Type: application/json" \
-  -d "{\"type\": \"listener\", \"headless\": $HEADLESS}")
+  -d "{\"type\": \"listener\", \"headless\": $HEADLESS}" 2>"$CURL_ERR_FILE")
 CURL_EXIT=$?
+CURL_ERR=$(cat "$CURL_ERR_FILE")
+rm -f "$CURL_ERR_FILE"
 
 if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
-  a2a_debug_log "join" "listen:setup_failed curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no)"
+  a2a_debug_log "join" "listen:setup_failed base_url=$BASE_URL curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
   echo "ERROR: Cannot reach A2A Linker server at $BASE_URL (curl exit $CURL_EXIT)"
+  if [ -n "$CURL_ERR" ]; then
+    echo "DETAIL: $(a2a_debug_compact_text "$CURL_ERR")"
+  fi
   exit 1
 fi
 

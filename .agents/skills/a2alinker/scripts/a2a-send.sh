@@ -54,28 +54,54 @@ TOKEN=$(a2a_read_primary_token "$ROLE") || {
 TMPFILE=$(mktemp)
 cat <<< "$MESSAGE" > "$TMPFILE"
 
-CURL_ERR_FILE=$(mktemp)
-RESP=$(curl --max-time 30 -s -w '\n%{http_code}' -X POST "$BASE_URL/send" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: text/plain" \
-  --data-binary "@$TMPFILE" 2>"$CURL_ERR_FILE")
-CURL_EXIT=$?
-CURL_ERR=$(cat "$CURL_ERR_FILE")
+run_send_request() {
+  local curl_err_file
+  curl_err_file=$(mktemp)
+  RESP=$(curl --max-time 30 -sS -w '\n%{http_code}' -X POST "$BASE_URL/send" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: text/plain" \
+    --data-binary "@$TMPFILE" 2>"$curl_err_file")
+  CURL_EXIT=$?
+  CURL_ERR=$(cat "$curl_err_file")
+  rm -f "$curl_err_file"
+  HTTP_CODE=$(echo "$RESP" | tail -1)
+  BODY=$(echo "$RESP" | sed '$d')
+}
+
+SEND_ATTEMPT=1
+while true; do
+  run_send_request
+  if [ "$SEND_ATTEMPT" -ge 2 ] || ! a2a_is_remote_base_url "$BASE_URL" || ! a2a_is_retryable_transport_exit "$CURL_EXIT"; then
+    break
+  fi
+  a2a_debug_log "$ROLE" "send:retry base_url=$BASE_URL prior_curl_exit=$CURL_EXIT next_attempt=$((SEND_ATTEMPT + 1)) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+  SEND_ATTEMPT=$((SEND_ATTEMPT + 1))
+done
 
 # Cleanup temp file immediately
 rm -f "$TMPFILE"
-rm -f "$CURL_ERR_FILE"
 
-HTTP_CODE=$(echo "$RESP" | tail -1)
-BODY=$(echo "$RESP" | sed '$d')
-
-if [ $CURL_EXIT -ne 0 ] || [ "$HTTP_CODE" = "000" ]; then
-  a2a_debug_log "$ROLE" "send:http_failed curl_exit=$CURL_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+if [ "$CURL_EXIT" -eq 28 ]; then
+  a2a_debug_log "$ROLE" "send:http_timeout base_url=$BASE_URL curl_exit=$CURL_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+elif [ $CURL_EXIT -ne 0 ] || [ "$HTTP_CODE" = "000" ]; then
+  a2a_debug_log "$ROLE" "send:http_failed base_url=$BASE_URL curl_exit=$CURL_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
 fi
 
 if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q 'DELIVERED'; then
   echo "DELIVERED"
   exit 0
+elif [ $CURL_EXIT -ne 0 ]; then
+  echo "NOT_DELIVERED: Cannot reach A2A Linker server at $BASE_URL (curl exit $CURL_EXIT)"
+  if [ -n "$CURL_ERR" ]; then
+    echo "DETAIL: $(a2a_debug_compact_text "$CURL_ERR")"
+  fi
+  exit 1
+elif [ "$HTTP_CODE" = "000" ]; then
+  echo "NOT_DELIVERED: A2A Linker send failed at $BASE_URL (HTTP 000)"
+  if [ -n "$CURL_ERR" ]; then
+    echo "DETAIL: $(a2a_debug_compact_text "$CURL_ERR")"
+  fi
+  exit 1
 elif [ "$HTTP_CODE" = "401" ]; then
   echo "NOT_DELIVERED: Session expired or invalid (HTTP 401). Please re-run the connect script."
   exit 1

@@ -47,7 +47,7 @@ a2a_debug_log "$ROLE" "wait:start timeout=${WAIT_POLL_TIMEOUT}s base_url=$BASE_U
 # queued reply for the full server wait timeout. The next /wait call will pick
 # up any message already sitting in the inbox.
 CURL_WAIT_ERR_FILE=$(mktemp)
-RESP=$(curl --max-time "$WAIT_POLL_TIMEOUT" -s -w '\n%{http_code}' --no-buffer \
+RESP=$(curl --max-time "$WAIT_POLL_TIMEOUT" -sS -w '\n%{http_code}' --no-buffer \
   "$BASE_URL/wait" \
   -H "Authorization: Bearer $TOKEN" 2>"$CURL_WAIT_ERR_FILE")
 CURL_WAIT_EXIT=$?
@@ -57,8 +57,10 @@ rm -f "$CURL_WAIT_ERR_FILE"
 HTTP_CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
 
-if [ $CURL_WAIT_EXIT -ne 0 ] || [ "$HTTP_CODE" = "000" ]; then
-  a2a_debug_log "$ROLE" "wait:http_failed curl_exit=$CURL_WAIT_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_WAIT_ERR")"
+if [ "$CURL_WAIT_EXIT" -eq 28 ]; then
+  a2a_debug_log "$ROLE" "wait:http_timeout base_url=$BASE_URL curl_exit=$CURL_WAIT_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_WAIT_ERR")"
+elif [ $CURL_WAIT_EXIT -ne 0 ] || [ "$HTTP_CODE" = "000" ]; then
+  a2a_debug_log "$ROLE" "wait:http_failed base_url=$BASE_URL curl_exit=$CURL_WAIT_EXIT http_code=$HTTP_CODE body_present=$([ -n "$BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_WAIT_ERR")"
 fi
 
 if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q '^MESSAGE_RECEIVED'; then
@@ -99,7 +101,7 @@ fi
 
 # On timeout or error, auto-ping to give the SKILL actionable context
 CURL_PING_ERR_FILE=$(mktemp)
-PING=$(curl --max-time 5 -s -w '\n%{http_code}' \
+PING=$(curl --max-time 5 -sS -w '\n%{http_code}' \
   "$BASE_URL/ping" \
   -H "Authorization: Bearer $TOKEN" 2>"$CURL_PING_ERR_FILE")
 PING_EXIT=$?
@@ -118,7 +120,7 @@ elif [ "$PING_CODE" = "200" ]; then
   echo "TIMEOUT_ROOM_ALIVE last_seen_ms=${LAST_SEEN:-0}"
   exit 0
 else
-  a2a_debug_log "$ROLE" "wait:ping code=$PING_CODE failed=1 curl_exit=$PING_EXIT body_present=$([ -n "$PING_BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$PING_ERR")"
+  a2a_debug_log "$ROLE" "wait:ping_failed base_url=$BASE_URL code=$PING_CODE curl_exit=$PING_EXIT body_present=$([ -n "$PING_BODY" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$PING_ERR")"
   echo "TIMEOUT_PING_FAILED"
   exit 1
 fi

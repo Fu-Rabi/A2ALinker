@@ -314,6 +314,26 @@ a2a_debug_compact_text() {
   printf '%s' "$value"
 }
 
+a2a_is_remote_base_url() {
+  local base_url="${1:-}"
+  case "$base_url" in
+    http://127.0.0.1|http://127.0.0.1:*|http://localhost|http://localhost:*|https://localhost|https://localhost:*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+a2a_is_retryable_transport_exit() {
+  local curl_exit="${1:-}"
+  case "$curl_exit" in
+    6|7)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # Sets PROMPT_FILE, RESPONSE_FILE, WORKDIR in the caller's shell context.
 # Optionally checks that a required executable is in PATH ($1).
 # Exits with an error message on validation failure.

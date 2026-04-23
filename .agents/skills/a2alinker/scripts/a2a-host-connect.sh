@@ -16,6 +16,15 @@ if [ -f /tmp/a2a_host_token ]; then
   OLD_TOKEN=$(cat /tmp/a2a_host_token)
 fi
 
+print_connect_error() {
+  local curl_exit="$1"
+  local curl_err="$2"
+  echo "ERROR: Cannot reach A2A Linker server at $BASE_URL (curl exit $curl_exit)"
+  if [ -n "$curl_err" ]; then
+    echo "DETAIL: $(a2a_debug_compact_text "$curl_err")"
+  fi
+}
+
 persist_host_session_artifact() {
   local status="$1"
   local attached_listener_code="$2"
@@ -73,15 +82,28 @@ if [ -n "$LISTEN_CODE" ]; then
   a2a_debug_log "host" "host_connect:start mode=listener_attach listen_code=$LISTEN_CODE base_url=$BASE_URL"
   # Listener flow: join the pre-staged room, become HOST
   # Now 1 round-trip: register + join in one call
-  CURL_ERR_FILE=$(mktemp)
-  RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/register-and-join/$LISTEN_CODE" 2>"$CURL_ERR_FILE")
-  CURL_EXIT=$?
-  CURL_ERR=$(cat "$CURL_ERR_FILE")
-  rm -f "$CURL_ERR_FILE"
+  run_attach_request() {
+    local curl_err_file
+    curl_err_file=$(mktemp)
+    RESP=$(curl --max-time 15 -sS -X POST "$BASE_URL/register-and-join/$LISTEN_CODE" 2>"$curl_err_file")
+    CURL_EXIT=$?
+    CURL_ERR=$(cat "$curl_err_file")
+    rm -f "$curl_err_file"
+  }
+
+  ATTACH_ATTEMPT=1
+  while true; do
+    run_attach_request
+    if { [ $CURL_EXIT -eq 0 ] && [ -n "$RESP" ]; } || [ "$ATTACH_ATTEMPT" -ge 2 ] || ! a2a_is_remote_base_url "$BASE_URL" || ! a2a_is_retryable_transport_exit "$CURL_EXIT"; then
+      break
+    fi
+    a2a_debug_log "host" "host_connect:attach_retry base_url=$BASE_URL prior_curl_exit=$CURL_EXIT next_attempt=$((ATTACH_ATTEMPT + 1)) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+    ATTACH_ATTEMPT=$((ATTACH_ATTEMPT + 1))
+  done
 
   if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
-    a2a_debug_log "host" "host_connect:attach_failed curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
-    echo "ERROR: Cannot reach A2A Linker server"
+    a2a_debug_log "host" "host_connect:attach_failed base_url=$BASE_URL curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+    print_connect_error "$CURL_EXIT" "$CURL_ERR"
     exit 1
   fi
 
@@ -114,17 +136,30 @@ else
   a2a_debug_log "host" "host_connect:start mode=standard base_url=$BASE_URL"
   # Standard flow: register + create room in 1 round-trip
   HEADLESS_ARG="${2:-false}"
-  CURL_ERR_FILE=$(mktemp)
-  RESP=$(curl --max-time 15 -s -X POST "$BASE_URL/setup" \
-    -H "Content-Type: application/json" \
-    -d "{\"type\": \"standard\", \"headless\": $HEADLESS_ARG}" 2>"$CURL_ERR_FILE")
-  CURL_EXIT=$?
-  CURL_ERR=$(cat "$CURL_ERR_FILE")
-  rm -f "$CURL_ERR_FILE"
+  run_setup_request() {
+    local curl_err_file
+    curl_err_file=$(mktemp)
+    RESP=$(curl --max-time 15 -sS -X POST "$BASE_URL/setup" \
+      -H "Content-Type: application/json" \
+      -d "{\"type\": \"standard\", \"headless\": $HEADLESS_ARG}" 2>"$curl_err_file")
+    CURL_EXIT=$?
+    CURL_ERR=$(cat "$curl_err_file")
+    rm -f "$curl_err_file"
+  }
+
+  SETUP_ATTEMPT=1
+  while true; do
+    run_setup_request
+    if { [ $CURL_EXIT -eq 0 ] && [ -n "$RESP" ]; } || [ "$SETUP_ATTEMPT" -ge 2 ] || ! a2a_is_remote_base_url "$BASE_URL" || ! a2a_is_retryable_transport_exit "$CURL_EXIT"; then
+      break
+    fi
+    a2a_debug_log "host" "host_connect:setup_retry base_url=$BASE_URL prior_curl_exit=$CURL_EXIT next_attempt=$((SETUP_ATTEMPT + 1)) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+    SETUP_ATTEMPT=$((SETUP_ATTEMPT + 1))
+  done
 
   if [ $CURL_EXIT -ne 0 ] || [ -z "$RESP" ]; then
-    a2a_debug_log "host" "host_connect:setup_failed curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
-    echo "ERROR: Cannot reach A2A Linker server"
+    a2a_debug_log "host" "host_connect:setup_failed base_url=$BASE_URL curl_exit=$CURL_EXIT response_present=$([ -n "$RESP" ] && echo yes || echo no) curl_err=$(a2a_debug_compact_text "$CURL_ERR")"
+    print_connect_error "$CURL_EXIT" "$CURL_ERR"
     exit 1
   fi
 
