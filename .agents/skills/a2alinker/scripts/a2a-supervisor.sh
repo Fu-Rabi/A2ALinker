@@ -26,6 +26,8 @@ if [ "$has_status_or_help" = false ]; then
           rm -f "$PWD/.a2a-listener-session.json"
         elif [ "$mode_val" = "host" ]; then
           rm -f "$PWD/.a2a-host-session.json"
+        elif [ "$mode_val" = "join" ]; then
+          rm -f "$PWD/.a2a-join-session.json"
         fi
       fi
       break
@@ -493,7 +495,7 @@ read_persisted_runner() {
       artifacts=("$cwd/.a2a-host-session.json" "$cwd/.a2a-session-policy.json" "$cwd/.a2a-listener-policy.json")
       ;;
     join)
-      artifacts=("$cwd/.a2a-session-policy.json" "$cwd/.a2a-listener-policy.json")
+      artifacts=("$cwd/.a2a-join-session.json" "$cwd/.a2a-session-policy.json" "$cwd/.a2a-listener-policy.json")
       ;;
   esac
 
@@ -719,6 +721,8 @@ if [ "$MODE_ARG" = "host" ]; then
   SUPERVISOR_STATE_PATH="$PWD/.a2a-host-session.json"
 elif [ "$MODE_ARG" = "listen" ]; then
   SUPERVISOR_STATE_PATH="$PWD/.a2a-listener-session.json"
+elif [ "$MODE_ARG" = "join" ]; then
+  SUPERVISOR_STATE_PATH="$PWD/.a2a-join-session.json"
 fi
 
 supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:start mode=${MODE_ARG:-unset} listener_code=${LISTENER_CODE_ARG:-unset} status=$HAS_STATUS help=$HAS_HELP base_url=$(a2a_debug_compact_text "${A2A_BASE_URL:-${A2A_SERVER:-unset}}") cwd=$PWD"

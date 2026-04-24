@@ -5,7 +5,8 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-BASE_URL="$(a2a_resolve_base_url)"
+STALE_BASE_URL="$(a2a_resolve_saved_base_url_for_role join)"
+BASE_URL="$(a2a_resolve_fresh_base_url)"
 INVITE="${A2A_INVITE:-${1:-}}"
 
 if [ -z "$INVITE" ]; then
@@ -34,7 +35,7 @@ print_connect_error() {
 }
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
-a2a_cleanup_stale_join_token "$BASE_URL"
+a2a_cleanup_stale_join_token "$STALE_BASE_URL"
 
 # One-shot setup: register + join room in 1 round-trip
 run_join_request() {
@@ -78,6 +79,37 @@ echo "$TOKEN" > /tmp/a2a_join_token
 chmod 600 /tmp/a2a_join_token
 a2a_store_role_base_url "join" "$BASE_URL"
 
+SESSION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/a2a_join_XXXXXX")
+chmod 700 "$SESSION_DIR" 2>/dev/null || true
+printf '%s\n' "$TOKEN" > "$SESSION_DIR/a2a_join_token"
+chmod 600 "$SESSION_DIR/a2a_join_token"
+
+HEADLESS=$(echo "$RESP" | sed -En 's/.*"headless": *(true|false).*/\1/p')
+ARTIFACT_PATH="$(a2a_artifact_path_for_role join 2>/dev/null || true)"
+if [ -n "$ARTIFACT_PATH" ]; then
+  node -e '
+    const fs = require("fs");
+    const [artifactPath, sessionDir, brokerEndpoint, inviteCode, headlessRaw] = process.argv.slice(1);
+    const now = new Date().toISOString();
+    const artifact = {
+      mode: "join",
+      status: "connected",
+      inviteCode: inviteCode || null,
+      brokerEndpoint,
+      headless: headlessRaw === "true",
+      sessionDir,
+      pid: null,
+      startedAt: now,
+      updatedAt: now,
+      source: "local_cache",
+      lastEvent: "join_connected",
+      error: null,
+      notice: null,
+    };
+    fs.writeFileSync(artifactPath, JSON.stringify(artifact, null, 2));
+  ' "$ARTIFACT_PATH" "$SESSION_DIR" "$BASE_URL" "$INVITE" "$HEADLESS"
+fi
+
 # Print rules text (decoded from JSON \n sequences)
 RULES=$(echo "$RESP" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g')
 if [ -n "$RULES" ]; then
@@ -93,7 +125,6 @@ fi
 echo "ROLE: join"
 
 # Print headless room rule (set by HOST — if true, agent runs without asking user)
-HEADLESS=$(echo "$RESP" | sed -En 's/.*"headless": *(true|false).*/\1/p')
 if [ -n "$HEADLESS" ]; then
   echo "HEADLESS: $HEADLESS"
 fi

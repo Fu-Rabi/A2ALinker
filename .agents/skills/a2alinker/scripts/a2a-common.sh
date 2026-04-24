@@ -33,7 +33,7 @@ a2a_read_field_from_artifact() {
   return 1
 }
 
-a2a_resolve_base_url() {
+a2a_resolve_explicit_base_url() {
   if [ -n "${A2A_BASE_URL:-}" ]; then
     printf '%s\n' "$A2A_BASE_URL"
     return 0
@@ -51,10 +51,27 @@ a2a_resolve_base_url() {
     return 0
   fi
 
+  return 1
+}
+
+a2a_resolve_fresh_base_url() {
+  if a2a_resolve_explicit_base_url; then
+    return 0
+  fi
+
+  printf '%s\n' "http://127.0.0.1:3000"
+}
+
+a2a_resolve_base_url() {
+  if a2a_resolve_explicit_base_url; then
+    return 0
+  fi
+
   local cwd
   cwd="${PWD:-$(pwd)}"
   for artifact_path in \
     "$cwd/.a2a-host-session.json" \
+    "$cwd/.a2a-join-session.json" \
     "$cwd/.a2a-listener-session.json" \
     "$cwd/.a2a-session-policy.json" \
     "$cwd/.a2a-listener-policy.json"
@@ -106,6 +123,23 @@ a2a_clear_role_base_url() {
   rm -f "$base_url_path"
 }
 
+a2a_resolve_saved_base_url_for_role() {
+  local role="$1"
+  if [ -n "$role" ]; then
+    if a2a_read_role_base_url "$role"; then
+      return 0
+    fi
+
+    local artifact_path
+    artifact_path="$(a2a_artifact_path_for_role "$role" 2>/dev/null || true)"
+    if [ -n "$artifact_path" ] && a2a_read_broker_from_artifact "$artifact_path"; then
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "http://127.0.0.1:3000"
+}
+
 a2a_resolve_active_base_url_for_role() {
   local role="$1"
   if [ -n "${A2A_BASE_URL:-}" ] || [ -n "${A2A_SERVER:-}" ]; then
@@ -148,10 +182,161 @@ a2a_artifact_path_for_role() {
     host)
       printf '%s\n' "$cwd/.a2a-host-session.json"
       ;;
-    join|listen)
+    join)
+      printf '%s\n' "$cwd/.a2a-join-session.json"
+      ;;
+    listen)
       printf '%s\n' "$cwd/.a2a-listener-session.json"
       ;;
     *)
+      return 1
+      ;;
+  esac
+}
+
+a2a_update_artifact_state() {
+  local role="$1"
+  local status="$2"
+  local last_event="$3"
+  local pid_value="${4-__KEEP__}"
+  local error_text="${5-__KEEP__}"
+  local notice_text="${6-__KEEP__}"
+  local artifact_path
+  artifact_path="$(a2a_artifact_path_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$artifact_path" ] || [ ! -f "$artifact_path" ]; then
+    return 0
+  fi
+
+  node -e '
+    const fs = require("fs");
+    const [artifactPath, status, lastEvent, pidValue, errorText, noticeText] = process.argv.slice(1);
+    const data = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+    data.status = status;
+    data.lastEvent = lastEvent;
+    if (pidValue !== "__KEEP__") {
+      data.pid = pidValue === "null" ? null : Number(pidValue);
+    }
+    if (errorText !== "__KEEP__") {
+      data.error = errorText ? errorText : null;
+    }
+    if (noticeText !== "__KEEP__") {
+      data.notice = noticeText ? noticeText : null;
+    }
+    data.updatedAt = new Date().toISOString();
+    fs.writeFileSync(artifactPath, JSON.stringify(data, null, 2));
+  ' "$artifact_path" "$status" "$last_event" "$pid_value" "$error_text" "$notice_text" >/dev/null 2>&1 || true
+}
+
+a2a_wait_notice_for_role_state() {
+  local role="$1"
+  local status="$2"
+  case "$status" in
+    waiting_for_partner_reply)
+      if [ "$role" = "host" ]; then
+        printf '%s\n' "Host message delivered. Passive wait is active while the partner reply is pending."
+      else
+        printf '%s\n' "Reply delivered. Passive wait is active while the host response is pending."
+      fi
+      ;;
+    waiting_for_host_message)
+      printf '%s\n' "Passive wait is active while the host sends the next message."
+      ;;
+    waiting_for_local_task)
+      if [ "$role" = "host" ]; then
+        printf '%s\n' "Passive wait is active while the local human decides the next host message."
+      else
+        printf '%s\n' "Passive wait is active while the local human decides the next reply."
+      fi
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+a2a_pending_message_notice_for_role() {
+  local role="$1"
+  if [ "$role" = "host" ]; then
+    printf '%s\n' "A partner event is stored locally. Run a2a-chat.sh host to inspect it."
+  else
+    printf '%s\n' "A host event is stored locally. Run a2a-chat.sh join to inspect it."
+  fi
+}
+
+a2a_inactivity_notice_for_role_state() {
+  local role="$1"
+  local status="$2"
+  local threshold_seconds="$3"
+  case "$status" in
+    waiting_for_partner_reply)
+      if [ "$role" = "host" ]; then
+        printf '%s\n' "Still waiting for the partner reply. No remote activity has been seen for ${threshold_seconds}s, but the passive wait is still active."
+      else
+        printf '%s\n' "Still waiting for the host reply. No remote activity has been seen for ${threshold_seconds}s, but the passive wait is still active."
+      fi
+      ;;
+    waiting_for_host_message)
+      printf '%s\n' "Still waiting for the host's next message. No remote activity has been seen for ${threshold_seconds}s, but the passive wait is still active."
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+a2a_extract_system_body() {
+  local output="$1"
+  local normalized
+  normalized="$(printf '%s' "$output" | tr -d '\r')"
+  if [[ "$normalized" != MESSAGE_RECEIVED$'\n'* ]]; then
+    return 1
+  fi
+
+  normalized="${normalized#MESSAGE_RECEIVED$'\n'}"
+  case "$normalized" in
+    "[SYSTEM]:"*|"[SYSTEM ALERT]:"*)
+      printf '%s\n' "$normalized"
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+a2a_system_close_event_name() {
+  local body="$1"
+  case "$body" in
+    "[SYSTEM]:"*"has left the room. Session ended."*)
+      printf '%s\n' "room_closed"
+      return 0
+      ;;
+    "[SYSTEM]:"*"has closed the session."*|"[SYSTEM]:"*"Session ended."*|"[SYSTEM]:"*"Session expired due to inactivity."*|"[SYSTEM]:"*"Session was closed by broker policy."*)
+      printf '%s\n' "system_closed"
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+a2a_output_is_terminal_close() {
+  a2a_output_close_event_name "$1" >/dev/null
+}
+
+a2a_output_close_event_name() {
+  local output="$1"
+  local system_body
+  case "$output" in
+    TIMEOUT_ROOM_CLOSED*)
+      printf '%s\n' "room_closed"
+      ;;
+    *)
+      if system_body="$(a2a_extract_system_body "$output")"; then
+        a2a_system_close_event_name "$system_body"
+        return $?
+      fi
       return 1
       ;;
   esac

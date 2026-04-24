@@ -6,6 +6,7 @@ import {
     normalizeSupervisorReply,
     parseLoopEvent,
     readHostSessionArtifact,
+    readJoinSessionArtifact,
     readListenerSessionArtifact,
     runSupervisor,
 } from '../src/supervisor';
@@ -187,6 +188,83 @@ describe('runSupervisor', () => {
         expect(artifact.error).toContain('WAIT_ALREADY_PENDING');
     });
 
+    it('marks join status as stale local state when the recorded pid is no longer running', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-status-'));
+        const artifactPath = path.join(root, '.a2a-join-session.json');
+        fs.writeFileSync(artifactPath, JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_host_message',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir: path.join(root, 'session'),
+            pid: 999999,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+
+        const artifact = readJoinSessionArtifact(root);
+
+        expect(artifact.status).toBe('stale_local_state');
+        expect(artifact.error).toContain('Supervisor process is no longer running');
+    });
+
+    it('upgrades join status to waiting_for_local_task when a pending message is already stored', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-status-mailbox-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_host_message',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), 'MESSAGE_RECEIVED\n┌─ Agent-host [OVER]\n│\n│ hello\n└────\n', 'utf8');
+
+        const artifact = readJoinSessionArtifact(root);
+
+        expect(artifact.status).toBe('waiting_for_local_task');
+        expect(artifact.lastEvent).toBe('waiting_for_local_task');
+        expect(artifact.notice).toContain('Run a2a-chat.sh join');
+    });
+
+    it('does not mark join status closed when a pending partner message only quotes a disconnect phrase', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-status-quoted-close-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_host_message',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), `MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ The UI says "You are disconnected." but keep waiting.
+└────
+`, 'utf8');
+
+        const artifact = readJoinSessionArtifact(root);
+
+        expect(artifact.status).toBe('waiting_for_local_task');
+        expect(artifact.lastEvent).toBe('waiting_for_local_task');
+        expect(artifact.notice).toContain('Run a2a-chat.sh join');
+    });
+
     it('treats a host token-missing mailbox error as closed when the local listener artifact is already closed', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-token-missing-closed-'));
         const sessionDir = path.join(root, 'session');
@@ -285,10 +363,15 @@ process.stdout.write('I found the failing assertion and fixed it. [STANDBY]\\n')
 
         const sentLog = fs.readFileSync(sentLogPath, 'utf8');
         const metadata = JSON.parse(fs.readFileSync(session.metadataPath, 'utf8')) as Record<string, string>;
+        const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-join-session.json'), 'utf8')) as Record<string, string | boolean | null>;
 
         expect(sentLog).toContain('I found the failing assertion and fixed it. [STANDBY]');
         expect(metadata.agentLabel).toBe('custom-bot');
         expect(metadata.status).toBe('closed');
+        expect(metadata.joinStatePath).toBe(path.join(root, '.a2a-join-session.json'));
+        expect(artifact.mode).toBe('join');
+        expect(artifact.inviteCode).toBe('invite_join123');
+        expect(artifact.status).toBe('closed');
     });
 
     it('records a session grant after local approval and persists it in the policy file', async () => {

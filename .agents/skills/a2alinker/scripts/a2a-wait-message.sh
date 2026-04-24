@@ -10,6 +10,60 @@ ROLE="${1:-host}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 WAIT_POLL_TIMEOUT="${A2A_WAIT_POLL_TIMEOUT:-15}"
 BASE_URL="$(a2a_resolve_active_base_url_for_role "$ROLE")"
+CURRENT_CURL_PID=""
+CURRENT_CURL_OUT=""
+CURRENT_CURL_ERR_FILE=""
+CURL_CAPTURE_ERR=""
+
+cleanup_active_curl() {
+  if [ -n "$CURRENT_CURL_PID" ]; then
+    kill "$CURRENT_CURL_PID" 2>/dev/null || true
+    wait "$CURRENT_CURL_PID" 2>/dev/null || true
+    CURRENT_CURL_PID=""
+  fi
+  if [ -n "$CURRENT_CURL_OUT" ]; then
+    rm -f "$CURRENT_CURL_OUT"
+    CURRENT_CURL_OUT=""
+  fi
+  if [ -n "$CURRENT_CURL_ERR_FILE" ]; then
+    rm -f "$CURRENT_CURL_ERR_FILE"
+    CURRENT_CURL_ERR_FILE=""
+  fi
+}
+
+run_curl_capture() {
+  local response_var="$1"
+  local exit_var="$2"
+  shift 2
+
+  cleanup_active_curl
+  CURRENT_CURL_OUT="$(mktemp)"
+  CURRENT_CURL_ERR_FILE="$(mktemp)"
+  curl "$@" >"$CURRENT_CURL_OUT" 2>"$CURRENT_CURL_ERR_FILE" &
+  CURRENT_CURL_PID=$!
+
+  local curl_exit
+  if wait "$CURRENT_CURL_PID"; then
+    curl_exit=0
+  else
+    curl_exit=$?
+  fi
+
+  local response
+  response="$(cat "$CURRENT_CURL_OUT" 2>/dev/null || true)"
+  CURL_CAPTURE_ERR="$(cat "$CURRENT_CURL_ERR_FILE" 2>/dev/null || true)"
+  rm -f "$CURRENT_CURL_OUT" "$CURRENT_CURL_ERR_FILE"
+  CURRENT_CURL_PID=""
+  CURRENT_CURL_OUT=""
+  CURRENT_CURL_ERR_FILE=""
+
+  printf -v "$response_var" '%s' "$response"
+  printf -v "$exit_var" '%s' "$curl_exit"
+}
+
+trap 'cleanup_active_curl' EXIT
+trap 'cleanup_active_curl; exit 130' INT
+trap 'cleanup_active_curl; exit 143' TERM
 
 listener_closed_locally() {
   local artifact_path status
@@ -46,13 +100,11 @@ a2a_debug_log "$ROLE" "wait:start timeout=${WAIT_POLL_TIMEOUT}s base_url=$BASE_U
 # Use shorter client-side long-polls so a missed broker wake does not strand a
 # queued reply for the full server wait timeout. The next /wait call will pick
 # up any message already sitting in the inbox.
-CURL_WAIT_ERR_FILE=$(mktemp)
-RESP=$(curl --max-time "$WAIT_POLL_TIMEOUT" -sS -w '\n%{http_code}' --no-buffer \
+run_curl_capture RESP CURL_WAIT_EXIT \
+  --max-time "$WAIT_POLL_TIMEOUT" -sS -w '\n%{http_code}' --no-buffer \
   "$BASE_URL/wait" \
-  -H "Authorization: Bearer $TOKEN" 2>"$CURL_WAIT_ERR_FILE")
-CURL_WAIT_EXIT=$?
-CURL_WAIT_ERR=$(cat "$CURL_WAIT_ERR_FILE")
-rm -f "$CURL_WAIT_ERR_FILE"
+  -H "Authorization: Bearer $TOKEN"
+CURL_WAIT_ERR="$CURL_CAPTURE_ERR"
 
 HTTP_CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
@@ -100,13 +152,11 @@ if [ "$HTTP_CODE" = "400" ] && echo "$BODY" | grep -q 'Not in a room'; then
 fi
 
 # On timeout or error, auto-ping to give the SKILL actionable context
-CURL_PING_ERR_FILE=$(mktemp)
-PING=$(curl --max-time 5 -sS -w '\n%{http_code}' \
+run_curl_capture PING PING_EXIT \
+  --max-time 5 -sS -w '\n%{http_code}' \
   "$BASE_URL/ping" \
-  -H "Authorization: Bearer $TOKEN" 2>"$CURL_PING_ERR_FILE")
-PING_EXIT=$?
-PING_ERR=$(cat "$CURL_PING_ERR_FILE")
-rm -f "$CURL_PING_ERR_FILE"
+  -H "Authorization: Bearer $TOKEN"
+PING_ERR="$CURL_CAPTURE_ERR"
 PING_CODE=$(echo "$PING" | tail -1)
 PING_BODY=$(echo "$PING" | sed '$d')
 
