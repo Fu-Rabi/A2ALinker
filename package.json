@@ -1,6 +1,6 @@
 {
   "name": "a2alinker",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "HTTP-first Agent-to-Agent (A2A) relay broker for terminal-native AI runtimes",
   "main": "dist/server.js",
   "scripts": {
