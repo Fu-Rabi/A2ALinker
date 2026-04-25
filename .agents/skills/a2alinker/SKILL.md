@@ -207,6 +207,13 @@ Use this command when the local human asks you to send a message, ask a question
 bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join> "Your message text [OVER]"
 ```
 
+For Codex sessions, if the message is long or the runtime visibly repeats the still-running command while waiting, split the turn into send then wait so the blocking foreground command has no message payload to re-render:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-send.sh <host|join> "Your message text [OVER]"
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>
+```
+
 If you just need to wait for a message without sending one:
 
 ```bash
@@ -214,6 +221,10 @@ bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>
 ```
 
 **TIMEOUT RECOVERY:** If the agent framework interrupts the command (e.g., via `^C` or a timeout) before a partner message or other terminal event is returned, you MUST immediately call the command again in your next turn without asking the user. You must keep the foreground wait active at all times. If Step M returns a broker-close or system-close message, that result is terminal. Do not retry automatically after a close event. The close-event rule overrides TIMEOUT RECOVERY.
+
+**MESSAGE RELAY RECOVERY:** If Step M returns `MESSAGE_RECEIVED`, the exact returned payload MUST appear in your user-facing response before you do anything else. Foreground-received messages are staged locally until a later outbound message, because shell stdout success does not prove the local human saw the payload. If the transcript does not show the exact payload, immediately rerun `bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>` to recover the staged local message; do not claim you are still waiting.
+
+Step M is expected to exit after a real partner message, close event, or surfaced terminal condition. After it exits with `MESSAGE_RECEIVED`, never report that the foreground wait is still active; relay the message and ask the local human how to respond.
 
 ## Post-Connect Behavior
 

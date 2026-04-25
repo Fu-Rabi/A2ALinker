@@ -2622,7 +2622,7 @@ echo started >> "${waiterStartedPath}"
         }
     });
 
-    it('syncs host artifact state back to waiting_for_local_task when the passive waiter restarts', () => {
+    it('keeps host artifact on local-task state without a passive waiter while a foreground reply is unacknowledged', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-artifact-sync-'));
         const scriptDir = path.join(root, 'scripts');
         const sessionDir = path.join(root, 'session');
@@ -2674,7 +2674,9 @@ sleep 1
             const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8'));
             expect(artifact.status).toBe('waiting_for_local_task');
             expect(artifact.lastEvent).toBe('waiting_for_local_task');
-            expect(typeof artifact.pid).toBe('number');
+            expect(artifact.pid).toBeNull();
+            expect(artifact.notice).toContain('Run a2a-chat.sh host');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_host_pending_message.txt'), 'utf8')).toContain('Reply after normal turn');
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }
@@ -2806,11 +2808,12 @@ EOF
                 error: string | null;
                 notice: string | null;
             };
-            expect(artifact.status).toBe('connected');
+            expect(artifact.status).toBe('waiting_for_local_task');
             expect(artifact.lastEvent).toBe('waiting_for_local_task');
             expect(artifact.pid).toBeNull();
             expect(artifact.error).toBeNull();
-            expect(artifact.notice).toBeNull();
+            expect(artifact.notice).toContain('Run a2a-chat.sh join');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), 'utf8')).toContain('The UI says "You are disconnected." but keep waiting.');
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }
@@ -2996,7 +2999,179 @@ sleep 3
             expect(result.status).toBe(0);
             expect(result.stdout).toContain('Confirm you are still there');
             expect(result.stdout).not.toContain('loop-should-not-run');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), 'utf8')).toContain('Confirm you are still there');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_last_foreground_output.txt'), 'utf8')).toContain('Confirm you are still there');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('stages a foreground join receive before printing and keeps it until outbound reply', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-join-foreground-stage-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'connected',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'foreground_chat_active',
+            error: null,
+            notice: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Please send a confirmation message to verify the connection.
+└────
+EOF
+`);
+
+        try {
+            const result = withJoinToken('tok_join_foreground_stage', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'join'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('Please send a confirmation message to verify the connection.');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), 'utf8')).toContain('Please send a confirmation message');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_last_foreground_output.txt'), 'utf8')).toContain('Please send a confirmation message');
+
+            const debugLog = fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8');
+            expect(debugLog).toContain('chat:stage_pending_output first_line=MESSAGE_RECEIVED');
+            expect(debugLog).toContain('chat:print_output_start first_line=MESSAGE_RECEIVED');
+            expect(debugLog).toContain('chat:print_output_complete status=0 first_line=MESSAGE_RECEIVED');
+
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-join-session.json'), 'utf8')) as {
+                status: string;
+                lastEvent: string;
+                notice: string | null;
+            };
+            expect(artifact.status).toBe('waiting_for_local_task');
+            expect(artifact.lastEvent).toBe('waiting_for_local_task');
+            expect(artifact.notice).toContain('Run a2a-chat.sh join');
+
+            writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+echo "DELIVERED"
+`);
+            const reply = withJoinToken('tok_join_foreground_stage', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'join', 'Confirmed receipt [OVER]'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(reply.status).toBe(0);
             expect(fs.existsSync(path.join(sessionDir, 'a2a_join_pending_message.txt'))).toBe(false);
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8')).toContain('chat:clear_pending_for_outbound');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('stages a join send-and-wait receive even when output starts with DELIVERED', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-join-send-wait-stage-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'connected',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'foreground_chat_active',
+            error: null,
+            notice: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+cat <<'EOF'
+DELIVERED
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Please declare your name.
+└────
+EOF
+`);
+
+        try {
+            const result = withJoinToken('tok_join_send_wait_stage', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'join', 'My name is Codi. [OVER]'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('DELIVERED');
+            expect(result.stdout).toContain('Please declare your name.');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), 'utf8')).toContain('Please declare your name.');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_join_last_foreground_output.txt'), 'utf8')).toContain('DELIVERED');
+
+            const debugLog = fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8');
+            expect(debugLog).toContain('chat:stage_pending_output first_line=DELIVERED');
+            expect(debugLog).toContain('chat:print_output_complete status=0 first_line=DELIVERED');
+
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-join-session.json'), 'utf8')) as {
+                status: string;
+                lastEvent: string;
+                notice: string | null;
+            };
+            expect(artifact.status).toBe('waiting_for_local_task');
+            expect(artifact.lastEvent).toBe('waiting_for_local_task');
+            expect(artifact.notice).toContain('Run a2a-chat.sh join');
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }

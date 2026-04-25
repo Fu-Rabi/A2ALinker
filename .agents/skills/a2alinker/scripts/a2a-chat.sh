@@ -213,6 +213,7 @@ should_restart_passive_waiter() {
 apply_output_artifact_state() {
   local role="$1"
   local output="$2"
+  local pending_path
 
   if a2a_output_is_terminal_close "$output"; then
     a2a_update_artifact_state "$role" "closed" "$(a2a_output_close_event_name "$output")" "null" "" ""
@@ -229,9 +230,14 @@ apply_output_artifact_state() {
     *WAIT_UNAUTHORIZED*)
       a2a_update_artifact_state "$role" "error" "WAIT_UNAUTHORIZED" "null" "$output" ""
       ;;
-    MESSAGE_RECEIVED*)
+    *MESSAGE_RECEIVED*)
       if [ "$role" = "join" ]; then
-        a2a_update_artifact_state "$role" "connected" "waiting_for_local_task" "null" "" ""
+        pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
+        if [ -n "$pending_path" ] && [ -s "$pending_path" ]; then
+          a2a_update_artifact_state "$role" "waiting_for_local_task" "waiting_for_local_task" "null" "" "$(a2a_pending_message_notice_for_role "$role")"
+        else
+          a2a_update_artifact_state "$role" "connected" "waiting_for_local_task" "null" "" ""
+        fi
       fi
       ;;
   esac
@@ -256,6 +262,72 @@ write_inflight_message() {
   fi
   mkdir -p "$(dirname "$inflight_path")"
   printf '%s\n' "$message" > "$inflight_path"
+}
+
+recoverable_output_for_role() {
+  local output="$1"
+  printf '%s\n' "$output" | grep -Eq '^(MESSAGE_RECEIVED|TIMEOUT_ROOM_CLOSED|WAIT_ALREADY_PENDING|WAIT_BROKER_DRAINING|WAIT_UNAUTHORIZED)'
+}
+
+write_last_foreground_output() {
+  local role="$1"
+  local output="$2"
+  local session_dir output_path tmp_path
+  session_dir="$(a2a_session_dir_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$session_dir" ]; then
+    return 0
+  fi
+  output_path="$session_dir/a2a_${role}_last_foreground_output.txt"
+  tmp_path="${output_path}.tmp"
+  mkdir -p "$session_dir"
+  printf '%s\n' "$output" > "$tmp_path"
+  mv "$tmp_path" "$output_path"
+}
+
+stage_pending_output_for_print() {
+  local role="$1"
+  local output="$2"
+  local pending_path tmp_path
+  if ! recoverable_output_for_role "$output"; then
+    return 0
+  fi
+  write_last_foreground_output "$role" "$output"
+  pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$pending_path" ]; then
+    return 0
+  fi
+  tmp_path="${pending_path}.tmp"
+  mkdir -p "$(dirname "$pending_path")"
+  printf '%s\n' "$output" > "$tmp_path"
+  mv "$tmp_path" "$pending_path"
+  a2a_update_artifact_state "$role" "waiting_for_local_task" "waiting_for_local_task" "null" "" "$(a2a_pending_message_notice_for_role "$role")"
+  a2a_debug_log "$role" "chat:stage_pending_output first_line=$(printf '%s' "$output" | head -n 1)"
+}
+
+clear_pending_message_for_outbound() {
+  local role="$1"
+  local pending_path
+  pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$pending_path" ] || [ ! -f "$pending_path" ]; then
+    return 0
+  fi
+  rm -f "$pending_path"
+  a2a_debug_log "$role" "chat:clear_pending_for_outbound"
+}
+
+print_output_recoverably() {
+  local role="$1"
+  local output="$2"
+  local rc
+  stage_pending_output_for_print "$role" "$output"
+  a2a_debug_log "$role" "chat:print_output_start first_line=$(printf '%s' "$output" | head -n 1)"
+  if printf '%s\n' "$output"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  a2a_debug_log "$role" "chat:print_output_complete status=$rc first_line=$(printf '%s' "$output" | head -n 1)"
+  return "$rc"
 }
 
 recover_inflight_reply_once() {
@@ -379,15 +451,14 @@ if [ "$ROLE" = "host" ]; then
         PENDING_PATH="$(a2a_pending_message_path_for_role "$ROLE" 2>/dev/null || true)"
         if [ -n "$PENDING_PATH" ] && [ -s "$PENDING_PATH" ]; then
           OUTPUT="$(cat "$PENDING_PATH")"
-          rm -f "$PENDING_PATH"
+          printf '%s\n' "$RESUME_NOTICE"
+          print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
           clear_inflight_message "$ROLE"
           apply_output_artifact_state "$ROLE" "$OUTPUT"
           if should_restart_passive_waiter "$OUTPUT"; then
             start_passive_waiter "$ROLE" "waiting_for_local_task" "waiting_for_local_task"
           fi
           A2A_CHAT_CLEAN_EXIT=1
-          printf '%s\n' "$RESUME_NOTICE"
-          printf '%s\n' "$OUTPUT"
           exit 0
         fi
         RECOVERY_WAIT_RESULT="$(recover_inflight_reply_once "$ROLE")"
@@ -395,26 +466,26 @@ if [ "$ROLE" = "host" ]; then
         case "$RECOVERY_WAIT_RESULT" in
           MESSAGE_RECEIVED*)
             OUTPUT="$RECOVERY_WAIT_RESULT"
+            printf '%s\n' "$RESUME_NOTICE"
+            print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
             clear_inflight_message "$ROLE"
             apply_output_artifact_state "$ROLE" "$OUTPUT"
             if should_restart_passive_waiter "$OUTPUT"; then
               start_passive_waiter "$ROLE" "waiting_for_local_task" "waiting_for_local_task"
             fi
             A2A_CHAT_CLEAN_EXIT=1
-            printf '%s\n' "$RESUME_NOTICE"
-            printf '%s\n' "$OUTPUT"
             exit 0
             ;;
           TIMEOUT_ROOM_CLOSED*)
             OUTPUT="$RECOVERY_WAIT_RESULT"
+            printf '%s\n' "$RESUME_NOTICE"
+            print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
             clear_inflight_message "$ROLE"
             apply_output_artifact_state "$ROLE" "$OUTPUT"
             if should_restart_passive_waiter "$OUTPUT"; then
               start_passive_waiter "$ROLE" "waiting_for_local_task" "waiting_for_local_task"
             fi
             A2A_CHAT_CLEAN_EXIT=1
-            printf '%s\n' "$RESUME_NOTICE"
-            printf '%s\n' "$OUTPUT"
             exit 0
             ;;
           *)
@@ -430,17 +501,16 @@ if [ "$ROLE" = "host" ]; then
     if [ -n "$PENDING_PATH" ] && [ -s "$PENDING_PATH" ]; then
       OUTPUT="$(cat "$PENDING_PATH")"
       a2a_debug_log "$ROLE" "chat:consume_pending first_line=$(printf '%s' "$OUTPUT" | head -n 1)"
-      rm -f "$PENDING_PATH"
+      if [ -n "$RESUME_NOTICE" ]; then
+        printf '%s\n' "$RESUME_NOTICE"
+      fi
+      print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
       clear_inflight_message "$ROLE"
       apply_output_artifact_state "$ROLE" "$OUTPUT"
       if should_restart_passive_waiter "$OUTPUT"; then
         start_passive_waiter "$ROLE" "waiting_for_local_task" "waiting_for_local_task"
       fi
       A2A_CHAT_CLEAN_EXIT=1
-      if [ -n "$RESUME_NOTICE" ]; then
-        printf '%s\n' "$RESUME_NOTICE"
-      fi
-      printf '%s\n' "$OUTPUT"
       exit 0
     fi
   fi
@@ -451,16 +521,19 @@ if [ -z "$MESSAGE" ]; then
   if [ -n "$PENDING_PATH" ] && [ -s "$PENDING_PATH" ]; then
     OUTPUT="$(cat "$PENDING_PATH")"
     a2a_debug_log "$ROLE" "chat:consume_pending first_line=$(printf '%s' "$OUTPUT" | head -n 1)"
-    rm -f "$PENDING_PATH"
-    clear_inflight_message "$ROLE"
-    apply_output_artifact_state "$ROLE" "$OUTPUT"
-    A2A_CHAT_CLEAN_EXIT=1
     if [ -n "$RESUME_NOTICE" ]; then
       printf '%s\n' "$RESUME_NOTICE"
     fi
-    printf '%s\n' "$OUTPUT"
+    print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
+    clear_inflight_message "$ROLE"
+    apply_output_artifact_state "$ROLE" "$OUTPUT"
+    A2A_CHAT_CLEAN_EXIT=1
     exit 0
   fi
+fi
+
+if [ -n "$MESSAGE" ]; then
+  clear_pending_message_for_outbound "$ROLE"
 fi
 
 if [ "$PARK_MODE" -eq 1 ]; then
@@ -472,8 +545,17 @@ STATUS=$?
 a2a_debug_log "$ROLE" "chat:loop_complete status=$STATUS first_line=$(printf '%s' "$OUTPUT" | head -n 1)"
 
 if [ "$STATUS" -eq 0 ]; then
+  if [ -n "$RESUME_NOTICE" ]; then
+    printf '%s\n' "$RESUME_NOTICE"
+  fi
+  print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
   clear_inflight_message "$ROLE"
   apply_output_artifact_state "$ROLE" "$OUTPUT"
+else
+  if [ -n "$RESUME_NOTICE" ]; then
+    printf '%s\n' "$RESUME_NOTICE"
+  fi
+  printf '%s\n' "$OUTPUT"
 fi
 
 if [ "$ROLE" = "host" ] && should_restart_passive_waiter "$OUTPUT"; then
@@ -481,8 +563,4 @@ if [ "$ROLE" = "host" ] && should_restart_passive_waiter "$OUTPUT"; then
 fi
 
 A2A_CHAT_CLEAN_EXIT=1
-if [ -n "$RESUME_NOTICE" ]; then
-  printf '%s\n' "$RESUME_NOTICE"
-fi
-printf '%s\n' "$OUTPUT"
 exit "$STATUS"
