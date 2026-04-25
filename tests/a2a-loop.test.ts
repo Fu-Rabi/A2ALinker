@@ -138,6 +138,42 @@ EOF
         }
     });
 
+    it('surfaces the full join notification when explicitly requested', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-test-'));
+        const scriptDir = path.join(root, 'scripts');
+        fs.mkdirSync(scriptDir, { recursive: true });
+
+        fs.copyFileSync(realScriptPath, path.join(scriptDir, 'a2a-loop.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-loop.sh'), 0o755);
+
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST 'Agent-abcd' has joined. Session is live!
+EOF
+`);
+
+        try {
+            const result = withJoinToken('tok_test_join', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'join'],
+                {
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        A2A_SURFACE_JOIN_NOTICE: 'true',
+                    },
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('MESSAGE_RECEIVED');
+            expect(result.stdout).toContain("HOST 'Agent-abcd' has joined. Session is live!");
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('blocks a reply-seeking STANDBY message in non-interactive mode', () => {
         const { root, scriptDir, sendLogPath } = setupTempLoopScripts();
 

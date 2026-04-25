@@ -20,10 +20,17 @@ MAX_PING_FAILS=3
 PING_FAIL_COUNT=0
 MAX_WAIT_CONFLICTS="${A2A_MAX_WAIT_CONFLICTS:-3}"
 WAIT_CONFLICT_COUNT=0
+SURFACE_JOIN_NOTICE=false
 READ_STDIN=false
 INFLIGHT_PATH="$(a2a_inflight_message_path_for_role "$ROLE" 2>/dev/null || true)"
 ARTIFACT_STANDBY_BYTES_THRESHOLD="${A2A_ARTIFACT_STANDBY_BYTES_THRESHOLD:-2048}"
 ARTIFACT_STANDBY_LONG_LINES_THRESHOLD="${A2A_ARTIFACT_STANDBY_LONG_LINES_THRESHOLD:-10}"
+
+case "$(printf '%s' "${A2A_SURFACE_JOIN_NOTICE:-false}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)
+    SURFACE_JOIN_NOTICE=true
+    ;;
+esac
 
 normalize_loop_message() {
   local payload="$1"
@@ -232,6 +239,10 @@ while true; do
 
       # Don't exit on routine 'joined' or 'live' messages. Keep waiting.
       if echo "$RESULT" | grep -i -q -E '(has joined|session is live)'; then
+        if [ "$SURFACE_JOIN_NOTICE" = true ]; then
+          echo "$RESULT"
+          exit 0
+        fi
         # The broker may have bundled a real partner message in the same payload
         # after the SYSTEM block. If so, extract and surface it now — we cannot
         # call a2a-wait-message.sh again because the broker already delivered it.

@@ -652,7 +652,9 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
       }
       nextEvent = await getInitialHostEvent(resolved, session, connect.status);
     } else {
-      nextEvent = await runLoopScript(resolved, session, connect.role);
+      nextEvent = await runLoopScript(resolved, session, connect.role, {
+        surfaceJoinNotice: connect.status === 'waiting',
+      });
     }
 
     for (;;) {
@@ -709,6 +711,26 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
             ...(nextEvent.kind === 'joined' ? { status: 'connected' } : {}),
             lastEvent: `system_${nextEvent.kind}`,
           });
+          if (nextEvent.kind === 'joined' && session.role === 'host' && !resolved.goal?.trim()) {
+            writeSessionMetadata(session, {
+              status: 'connected',
+              lastEvent: 'waiting_for_local_task',
+            });
+            writeSessionArtifact(resolved, session, {
+              status: 'connected',
+              pid: null,
+              lastEvent: 'waiting_for_local_task',
+              error: null,
+            });
+            emitUiEvent(resolved, {
+              type: 'notice',
+              level: 'info',
+              label: 'WAITING',
+              detail: 'Connection established. Waiting for a local human task before sending the first host message.',
+              layout: 'line',
+            });
+            return session;
+          }
           nextEvent = await runLoopScript(resolved, session, session.role);
           continue;
         }
@@ -1462,7 +1484,9 @@ async function getInitialHostEvent(
   connectionStatus: 'ready' | 'waiting',
 ): Promise<LoopEvent> {
   if (!options.goal?.trim()) {
-    return runLoopScript(options, session, 'host');
+    return runLoopScript(options, session, 'host', {
+      surfaceJoinNotice: connectionStatus === 'waiting',
+    });
   }
 
   const opening = `Hello from ${options.agentLabel}. Please help with this task: ${options.goal} [OVER]`;
@@ -1504,8 +1528,12 @@ async function runLoopScript(
   options: MutableSupervisorOptions,
   session: SessionState,
   role: ConversationRole,
+  loopOptions: { surfaceJoinNotice?: boolean } = {},
 ): Promise<LoopEvent> {
-  const result = await runScript(options, 'a2a-loop.sh', [role], session);
+  const env = loopOptions.surfaceJoinNotice
+    ? { ...options.env, A2A_SURFACE_JOIN_NOTICE: 'true' }
+    : options.env;
+  const result = await runScript(options, 'a2a-loop.sh', [role], session, env);
   return parseLoopEvent(result.stdout);
 }
 

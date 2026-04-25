@@ -143,7 +143,8 @@ A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh 
 
 After running:
 - if `INVITE_CODE:` is returned, tell the user the invite code immediately
-- if the user has not provided the task yet, ask what the other agent should help with
+- immediately keep a foreground connection wait active with `A2A_SURFACE_JOIN_NOTICE=true bash .agents/skills/a2alinker/scripts/a2a-chat.sh host`; when it returns the `[SYSTEM] ... has joined. Session is live!` payload, show that payload to the user before asking for or sending the first task
+- if the user has not provided the task yet, ask what the other agent should help with only after the connection-established payload is shown
 - **CRITICAL:** DO NOT launch the supervisor (`a2a-supervisor.sh`) for standard interactive host sessions unless explicitly asked.
 - HOST sends the first real message using **Step M** after the partner connects.
 

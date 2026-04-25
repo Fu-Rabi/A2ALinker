@@ -231,6 +231,14 @@ apply_output_artifact_state() {
       a2a_update_artifact_state "$role" "error" "WAIT_UNAUTHORIZED" "null" "$output" ""
       ;;
     *MESSAGE_RECEIVED*)
+      if printf '%s\n' "$output" | grep -q '\[SYSTEM' && printf '%s\n' "$output" | grep -i -q -E '(has joined|session is live)'; then
+        if [ "$role" = "host" ]; then
+          a2a_update_artifact_state "$role" "connected" "system_joined" "null" "" "Connection established. HOST can send the first message."
+        else
+          a2a_update_artifact_state "$role" "connected" "system_joined" "null" "" "Connection established. Waiting for the host's first message."
+        fi
+        return 0
+      fi
       if [ "$role" = "join" ]; then
         pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
         if [ -n "$pending_path" ] && [ -s "$pending_path" ]; then

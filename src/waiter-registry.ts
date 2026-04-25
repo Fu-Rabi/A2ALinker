@@ -1,9 +1,13 @@
 import { Response } from 'express';
+import type { InboxDelivery } from './broker-store';
 
 interface WaiterEntry {
   token: string;
   res: Response;
   timer: NodeJS.Timeout;
+  onUnfinishedDelivery?: (delivery: InboxDelivery) => void;
+  delivery?: InboxDelivery;
+  finished?: boolean;
 }
 
 export type WaiterResolveStatus = 'resolved' | 'stale' | 'missing';
@@ -18,6 +22,22 @@ export class WaiterRegistry {
   public register(waiterKey: string, entry: WaiterEntry): boolean {
     if (this.waiters.has(waiterKey)) {
       return false;
+    }
+
+    const eventedResponse = entry.res as Response & {
+      once?: (event: 'finish' | 'close', listener: () => void) => void;
+    };
+    if (typeof eventedResponse.once === 'function') {
+      eventedResponse.once('finish', () => {
+        entry.finished = true;
+        delete entry.delivery;
+      });
+      eventedResponse.once('close', () => {
+        if (entry.delivery && !entry.finished) {
+          entry.onUnfinishedDelivery?.(entry.delivery);
+          delete entry.delivery;
+        }
+      });
     }
 
     this.waiters.set(waiterKey, entry);
@@ -40,7 +60,7 @@ export class WaiterRegistry {
     return true;
   }
 
-  public resolveIfActive(waiterKey: string, text: string): WaiterResolveStatus {
+  public resolveIfActive(waiterKey: string, delivery: string | InboxDelivery): WaiterResolveStatus {
     const entry = this.waiters.get(waiterKey);
     if (!entry) {
       return 'missing';
@@ -53,9 +73,13 @@ export class WaiterRegistry {
       return 'stale';
     }
 
+    const resolvedDelivery = typeof delivery === 'string'
+      ? { text: delivery, closeAfterDelivery: false }
+      : delivery;
+    entry.delivery = resolvedDelivery;
     clearTimeout(entry.timer);
     this.waiters.delete(waiterKey);
-    entry.res.send(text);
+    entry.res.send(resolvedDelivery.text);
     return 'resolved';
   }
 
