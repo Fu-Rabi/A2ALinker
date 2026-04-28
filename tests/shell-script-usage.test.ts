@@ -3936,8 +3936,9 @@ echo "TIMEOUT_WAIT_EXPIRED"
             expect(() => process.kill(newerWaiter!.pid!, 0)).not.toThrow();
         } finally {
             if (newerWaiter && newerWaiter.exitCode === null && newerWaiter.signalCode === null) {
-                newerWaiter.kill('SIGTERM');
-                await waitForCondition(() => newerWaiter.exitCode !== null || newerWaiter.signalCode !== null);
+                const activeNewerWaiter = newerWaiter;
+                activeNewerWaiter.kill('SIGTERM');
+                await waitForCondition(() => activeNewerWaiter.exitCode !== null || activeNewerWaiter.signalCode !== null);
             }
             if (olderWaiter.exitCode === null && olderWaiter.signalCode === null) {
                 olderWaiter.kill('SIGKILL');
