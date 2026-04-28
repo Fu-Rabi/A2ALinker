@@ -14,6 +14,7 @@ description: Use this skill whenever the user mentions A2A, connecting to anothe
 - `--agent-label` is only a free-form display label shown in the session UI. It is not a runtime profile name.
 - Do not create files such as `Bucchinar.json` just because the human chose a label.
 - Keep transport mechanics internal. Do not tell the user you are about to run `a2a-loop.sh`, `a2a-send.sh`, or similar commands unless they explicitly asked for low-level details.
+- In Codex on a remote broker, request the required network approval/escalation before the first broker-touching command. Do not intentionally force a sandbox failure first when the command is known to need remote network access.
 - Before starting any flow (generating a fresh `invite_...` or `listen_...` code, attaching as HOST via a `listen_...` code, or redeeming an `invite_...` code as JOIN), ensure the broker target is explicit. Ask if the human has not already stated it. Never infer from cached artifacts, policy files, or a previous session.
 - Before starting any flow, ensure the agent label is explicit. Ask if the human has not already provided it. Do not omit or guess.
 - For status or clarification questions such as "where is it connected?" or "which broker is this using?", inspect `--status` or the local session artifact. Do not rerun connect/setup scripts just to answer.
@@ -143,7 +144,15 @@ A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh 
 
 After running:
 - if `INVITE_CODE:` is returned, tell the user the invite code immediately
-- immediately keep a foreground connection wait active with `A2A_SURFACE_JOIN_NOTICE=true bash .agents/skills/a2alinker/scripts/a2a-chat.sh host`; when it returns the `[SYSTEM] ... has joined. Session is live!` payload, show that payload to the user before asking for or sending the first task
+- once the invite code is known, emit it in a live progress update right away; do not hold it back waiting for the join notice
+- immediately keep a foreground connection wait active with `bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host`; when it returns the `[SYSTEM] ... has joined. Session is live!` payload, show that payload to the user before asking for or sending the first task
+- do not end the host-start turn just because 20-30 seconds passed without a join. Keep the same turn alive and continue polling the same join-wait terminal so the join event can still be surfaced when it lands
+- in Codex, if that host join-wait is running in a background terminal, you must keep polling that same terminal until it returns a terminal result. Do not end the turn with “I’ll surface it when they join” unless you are still actively polling the running wait
+- if the transcript renderer already showed `MESSAGE_RECEIVED` with `[SYSTEM]: Partner ... has joined. Session is live!` in that host-start turn, that terminal result is the source of truth. Do not answer with stale pre-join text such as “the join wait is still running” or “once the other agent joins”; the connection is already live
+- if the join-wait terminal exits before the HOST has sent any real message and it did not return the join notice, immediately start a fresh `bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host` wait and continue polling it in the same turn
+- if that surfaced pre-first-message host wait returns `TIMEOUT_PING_FAILED` before the HOST has sent any real task message, treat it as a transport failure, not a stable waiting state. On remote brokers, if the prior attempt may have been sandboxed, immediately rerun the same `bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host` command with the required network approval/escalation. Do not substitute `--status`, debug-log inspection, or repo patching for that required foreground relay loop
+- a successful `a2a-host-connect.sh` room creation does not prove the follow-up foreground host wait has network access. Do not tell the user the host wait is active after `TIMEOUT_PING_FAILED`; only say that after the rerun is actually in progress or after the join notice is returned
+- once the HOST has sent the first real message, switch back to normal Step M usage. Do not keep resurfacing historical join notices with `--surface-join-notice`
 - if the user has not provided the task yet, ask what the other agent should help with only after the connection-established payload is shown
 - **CRITICAL:** DO NOT launch the supervisor (`a2a-supervisor.sh`) for standard interactive host sessions unless explicitly asked.
 - HOST sends the first real message using **Step M** after the partner connects.
@@ -169,6 +178,8 @@ Rules:
 - do not ask for a goal just to satisfy tooling
 - do not launch host attach until the broker target is explicit
 - for remote brokers, use the direct `a2a-host-connect.sh` attach path first
+- before the first real host message, keep a foreground connection wait active with `bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host`; if it returns `TIMEOUT_PING_FAILED` before any real host message has been sent, treat that as a failed wait attempt and rerun that same surfaced join-wait path immediately. On remote brokers, request network approval/escalation if needed instead of claiming the wait is still active
+- after the first real host message, normal Step M applies and historical join notices should not be resurfaced
 - after attaching, if no task was provided yet, remain connected and wait for the local human's first task
 - HOST still sends the first real task message
 - after a backgrounded attach attempt, use `--mode host --status` instead of `ps`, `tail --pid`, or retrying the same listener code
@@ -215,15 +226,27 @@ bash .agents/skills/a2alinker/scripts/a2a-send.sh <host|join> "Your message text
 bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>
 ```
 
+For the first real HOST message after connection, prefer the single combined command `bash .agents/skills/a2alinker/scripts/a2a-chat.sh host "Your message text [OVER]"`. This lets a late staged join notice be surfaced before the outbound send if Codex previously stopped polling the join wait too early. After that first host message, for short host messages prefer the same combined command; split into `a2a-send.sh` then `a2a-chat.sh` only when the runtime has already shown that the combined command is being re-rendered or otherwise mishandled while waiting.
+
 If you just need to wait for a message without sending one:
 
 ```bash
 bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>
 ```
 
+During a live interactive HOST session, only one foreground `bash .agents/skills/a2alinker/scripts/a2a-chat.sh host ...` invocation may be active at a time. Do not launch a second concurrent host chat. `--status`, debug-log inspection, or repo patching are not substitutes for the required foreground relay loop.
+
 **TIMEOUT RECOVERY:** If the agent framework interrupts the command (e.g., via `^C` or a timeout) before a partner message or other terminal event is returned, you MUST immediately call the command again in your next turn without asking the user. You must keep the foreground wait active at all times. If Step M returns a broker-close or system-close message, that result is terminal. Do not retry automatically after a close event. The close-event rule overrides TIMEOUT RECOVERY.
 
+**REMOTE TRANSPORT FAILURE:** On a remote broker, if Step M or the surfaced pre-first-message host wait returns `TIMEOUT_PING_FAILED`, do not treat that as "still waiting". Treat it as a failed wait attempt. If the prior command may have run inside a restricted sandbox, immediately rerun the same command with the required network approval/escalation. Only tell the user the wait is active after that rerun has actually started or after a real message/notice is returned.
+
 **MESSAGE RELAY RECOVERY:** If Step M returns `MESSAGE_RECEIVED`, the exact returned payload MUST appear in your user-facing response before you do anything else. Foreground-received messages are staged locally until a later outbound message, because shell stdout success does not prove the local human saw the payload. If the transcript does not show the exact payload, immediately rerun `bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>` to recover the staged local message; do not claim you are still waiting.
+
+If the transcript already contains the terminal `MESSAGE_RECEIVED` block from the command you just ran, do not overwrite that result with a stale summary based on earlier empty polls. The terminal result wins.
+
+**BACKGROUND TERMINAL RULE:** A completed background terminal is not the same thing as a user-facing relay. If a wait command completed in a background terminal, you must poll that exact terminal, quote the returned payload exactly, and only then decide the next action. After a split `a2a-send.sh` turn, you must start a brand-new `bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>` command; a previously completed `--surface-join-notice` wait cannot be reused to receive the partner reply. If the transcript instead shows stale state or only a summary, immediately rerun `bash .agents/skills/a2alinker/scripts/a2a-chat.sh <host|join>` to recover the staged message.
+
+Codex note: this is especially important here because a completed background terminal and the final user-facing summary can drift out of sync.
 
 Step M is expected to exit after a real partner message, close event, or surfaced terminal condition. After it exits with `MESSAGE_RECEIVED`, never report that the foreground wait is still active; relay the message and ask the local human how to respond.
 

@@ -68,6 +68,8 @@ run_send_request() {
   BODY=$(echo "$RESP" | sed '$d')
 }
 
+clear_pending_message_for_outbound "$ROLE"
+
 SEND_ATTEMPT=1
 while true; do
   run_send_request

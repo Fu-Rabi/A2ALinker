@@ -2141,6 +2141,180 @@ printf 'DELIVERED\n200'
         fs.rmSync(tokenPath, { force: true });
     });
 
+    it('clears a staged host reply before raw send.sh transmits and avoids replaying it on the next host wait', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-host-clear-pending-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const binDir = path.join(root, 'bin');
+        const curlPendingStatePath = path.join(root, 'curl-pending-state');
+        const pendingPath = path.join(sessionDir, 'a2a_host_pending_message.txt');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.mkdirSync(binDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-send.sh', path.join(scriptDir, 'a2a-send.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-send.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'waiting_for_local_task',
+            error: null,
+            notice: 'A partner event is stored locally. Run a2a-chat.sh host to inspect it.',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(pendingPath, `MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ Stale partner reply should not replay.
+└────
+`, 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+if [ -f "${pendingPath}" ]; then
+  printf 'present\\n' > "${curlPendingStatePath}"
+else
+  printf 'missing\\n' > "${curlPendingStatePath}"
+fi
+printf 'DELIVERED\\n200'
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), '#!/bin/bash\necho "WAIT_ALREADY_PENDING"\n');
+
+        try {
+            const sendResult = withHostToken('tok_host_raw_send_clear', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-send.sh'), 'host', 'Fresh host message [OVER]'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                        A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(sendResult.status).toBe(0);
+            expect(sendResult.stdout).toContain('DELIVERED');
+            expect(fs.readFileSync(curlPendingStatePath, 'utf8').trim()).toBe('missing');
+            expect(fs.existsSync(pendingPath)).toBe(false);
+
+            const chatResult = withHostToken('tok_host_raw_send_clear', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(chatResult.status).toBe(0);
+            expect(chatResult.stdout).toContain('WAIT_ALREADY_PENDING');
+            expect(chatResult.stdout).not.toContain('Stale partner reply should not replay.');
+            expect(fs.readFileSync(pendingPath, 'utf8')).toContain('WAIT_ALREADY_PENDING');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('clears a staged join reply before raw send.sh transmits and avoids replaying it on the next join wait', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-join-clear-pending-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const binDir = path.join(root, 'bin');
+        const curlPendingStatePath = path.join(root, 'curl-pending-state');
+        const pendingPath = path.join(sessionDir, 'a2a_join_pending_message.txt');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.mkdirSync(binDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-send.sh', path.join(scriptDir, 'a2a-send.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-send.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'waiting_for_local_task',
+            error: null,
+            notice: 'A host event is stored locally. Run a2a-chat.sh join to inspect it.',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(pendingPath, `MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Stale host reply should not replay.
+└────
+`, 'utf8');
+
+        writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
+if [ -f "${pendingPath}" ]; then
+  printf 'present\\n' > "${curlPendingStatePath}"
+else
+  printf 'missing\\n' > "${curlPendingStatePath}"
+fi
+printf 'DELIVERED\\n200'
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), '#!/bin/bash\necho "WAIT_ALREADY_PENDING"\n');
+
+        try {
+            const sendResult = withJoinToken('tok_join_raw_send_clear', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-send.sh'), 'join', 'Fresh join reply [OVER]'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                        A2A_BASE_URL: 'http://127.0.0.1:3000',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(sendResult.status).toBe(0);
+            expect(sendResult.stdout).toContain('DELIVERED');
+            expect(fs.readFileSync(curlPendingStatePath, 'utf8').trim()).toBe('missing');
+            expect(fs.existsSync(pendingPath)).toBe(false);
+
+            const chatResult = withJoinToken('tok_join_raw_send_clear', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'join'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(chatResult.status).toBe(0);
+            expect(chatResult.stdout).toContain('WAIT_ALREADY_PENDING');
+            expect(chatResult.stdout).not.toContain('Stale host reply should not replay.');
+            expect(fs.readFileSync(pendingPath, 'utf8')).toContain('WAIT_ALREADY_PENDING');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('sends successfully from a host session artifact when the caller omits both role and broker env', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-send-trace-shape-'));
         const binDir = path.join(root, 'bin');
@@ -2682,6 +2856,138 @@ sleep 1
         }
     });
 
+    it('exits non-zero when host chat surfaces TIMEOUT_PING_FAILED and restores the passive waiter', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-host-ping-failed-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterStartedPath = path.join(root, 'waiter-started');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'connected',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'foreground_chat_active',
+            error: null,
+            notice: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), '#!/bin/bash\necho "TIMEOUT_PING_FAILED"\n');
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+mkdir -p "${sessionDir}"
+printf '%s\\n' "$$" > "${sessionDir}/a2a_host_passive_wait.pid"
+echo started >> "${waiterStartedPath}"
+`);
+
+        try {
+            const result = withHostToken('tok_host_ping_failed', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(1);
+            expect(result.stdout).toContain('TIMEOUT_PING_FAILED');
+            expect(fs.readFileSync(waiterStartedPath, 'utf8')).toContain('started');
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8')).toContain('chat:loop_transport_failure first_line=TIMEOUT_PING_FAILED');
+
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8')) as {
+                status: string;
+                lastEvent: string;
+                pid: number | null;
+                error: string | null;
+                notice: string | null;
+            };
+            expect(artifact.status).toBe('waiting_for_local_task');
+            expect(artifact.lastEvent).toBe('waiting_for_local_task');
+            expect(typeof artifact.pid).toBe('number');
+            expect(artifact.error).toBeNull();
+            expect(artifact.notice).toContain('local human decides the next host message');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('passes --surface-join-notice through chat.sh without relying on an env wrapper', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-surface-join-flag-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'connected',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'foreground_chat_active',
+            error: null,
+            notice: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+if [ -n "\${A2A_SURFACE_JOIN_NOTICE:-}" ]; then
+  echo "unexpected env" >&2
+  exit 97
+fi
+if [ "$1" != "--surface-join-notice" ] || [ "$2" != "host" ]; then
+  echo "unexpected args: $*" >&2
+  exit 98
+fi
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: Partner 'Agent-join' has joined. Session is live!
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), '#!/bin/bash\nexit 0\n');
+
+        try {
+            const result = withHostToken('tok_host_surface_join_flag', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), '--surface-join-notice', 'host'],
+                {
+                    cwd: root,
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('MESSAGE_RECEIVED');
+            expect(result.stdout).toContain("Partner 'Agent-join' has joined. Session is live!");
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('marks the join artifact closed when foreground chat receives a host-close system message', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-join-close-'));
         const scriptDir = path.join(root, 'scripts');
@@ -2746,6 +3052,62 @@ echo started >> "${waiterStartedPath}"
             expect(artifact.pid).toBeNull();
             expect(artifact.error).toBeNull();
             expect(artifact.notice).toBeNull();
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('exits non-zero when join chat surfaces TIMEOUT_PING_FAILED', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-join-ping-failed-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterStartedPath = path.join(root, 'waiter-started');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'connected',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'foreground_chat_active',
+            error: null,
+            notice: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), '#!/bin/bash\necho "TIMEOUT_PING_FAILED"\n');
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+echo started >> "${waiterStartedPath}"
+`);
+
+        try {
+            const result = withJoinToken('tok_join_ping_failed', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'join'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(1);
+            expect(result.stdout).toContain('TIMEOUT_PING_FAILED');
+            expect(fs.existsSync(waiterStartedPath)).toBe(false);
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8')).toContain('chat:loop_transport_failure first_line=TIMEOUT_PING_FAILED');
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }
@@ -3177,6 +3539,91 @@ EOF
         }
     });
 
+    it('surfaces a staged host join notice before the first combined host send clears it', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-host-join-recover-before-send-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const pendingPath = path.join(sessionDir, 'a2a_host_pending_message.txt');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'connected',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'system_joined',
+            error: null,
+            notice: 'Connection established. HOST can send the first message.',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(pendingPath, `MESSAGE_RECEIVED
+[SYSTEM]: Partner 'Agent-join' has joined. Session is live!
+`, 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+if [ "$1" != "host" ] || [ "$2" != "Please send a confirmation message. [OVER]" ]; then
+  echo "unexpected args: $*" >&2
+  exit 98
+fi
+cat <<'EOF'
+DELIVERED
+MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ I confirm the connection.
+└────
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), '#!/bin/bash\nexit 0\n');
+
+        try {
+            const result = withHostToken('tok_host_join_recover_before_send', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), 'host', 'Please send a confirmation message. [OVER]'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain("Partner 'Agent-join' has joined. Session is live!");
+            expect(result.stdout).toContain('DELIVERED');
+            expect(result.stdout).toContain('I confirm the connection.');
+            expect(result.stdout.indexOf("Partner 'Agent-join' has joined. Session is live!")).toBeLessThan(result.stdout.indexOf('DELIVERED'));
+            expect(fs.readFileSync(pendingPath, 'utf8')).toContain('I confirm the connection.');
+
+            const debugLog = fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8');
+            expect(debugLog).toContain('chat:recover_pending_join_notice_before_send');
+            expect(debugLog).toContain('chat:clear_pending_for_outbound');
+
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8')) as {
+                status: string;
+                lastEvent: string;
+                notice: string | null;
+            };
+            expect(artifact.status).toBe('waiting_for_local_task');
+            expect(artifact.lastEvent).toBe('waiting_for_local_task');
+            expect(artifact.notice).toContain('Run a2a-chat.sh host');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('marks the join passive waiter artifact closed when it stores a host-close system message', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-passive-wait-join-close-'));
         const scriptDir = path.join(root, 'scripts');
@@ -3308,6 +3755,197 @@ EOF
         }
     });
 
+    it('exits a passive waiter on its next loop when the waiter pid file is removed', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-passive-wait-lost-owner-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterPidPath = path.join(sessionDir, 'a2a_host_passive_wait.pid');
+        const startedPath = path.join(root, 'wait-started');
+        const releasePath = path.join(root, 'wait-release');
+        const waitCountPath = path.join(root, 'wait-count');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-passive-wait.sh', path.join(scriptDir, 'a2a-passive-wait.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-passive-wait.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            headless: false,
+            sessionDir,
+            pid: 123456,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'waiting_for_local_task',
+            error: null,
+            notice: 'Passive wait is active while the local human decides the next host message.',
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+COUNT=0
+if [ -n "\${A2A_TEST_WAIT_COUNT_PATH:-}" ] && [ -f "$A2A_TEST_WAIT_COUNT_PATH" ]; then
+  COUNT="$(cat "$A2A_TEST_WAIT_COUNT_PATH")"
+fi
+COUNT=$((COUNT + 1))
+if [ -n "\${A2A_TEST_WAIT_COUNT_PATH:-}" ]; then
+  printf '%s\\n' "$COUNT" > "$A2A_TEST_WAIT_COUNT_PATH"
+fi
+if [ "$COUNT" -eq 1 ] && [ -n "\${A2A_TEST_STARTED_PATH:-}" ]; then
+  printf 'started\\n' > "$A2A_TEST_STARTED_PATH"
+fi
+if [ "$COUNT" -eq 1 ] && [ -n "\${A2A_TEST_RELEASE_PATH:-}" ]; then
+  while [ ! -f "$A2A_TEST_RELEASE_PATH" ]; do
+    sleep 0.05
+  done
+fi
+echo "TIMEOUT_WAIT_EXPIRED"
+`);
+
+        const waiter = spawn('bash', [path.join(scriptDir, 'a2a-passive-wait.sh'), 'host'], {
+            cwd: root,
+            env: {
+                ...process.env,
+                A2A_DEBUG: '1',
+                A2A_TEST_STARTED_PATH: startedPath,
+                A2A_TEST_RELEASE_PATH: releasePath,
+                A2A_TEST_WAIT_COUNT_PATH: waitCountPath,
+            },
+            stdio: 'ignore',
+        });
+
+        try {
+            await waitForCondition(() => fs.existsSync(waiterPidPath) && fs.existsSync(startedPath));
+            fs.rmSync(waiterPidPath, { force: true });
+            fs.writeFileSync(releasePath, 'release\n', 'utf8');
+
+            await waitForCondition(() => waiter.exitCode !== null || waiter.signalCode !== null);
+
+            expect(waiter.exitCode).toBe(0);
+            expect(fs.readFileSync(waitCountPath, 'utf8').trim()).toBe('1');
+            expect(fs.existsSync(waiterPidPath)).toBe(false);
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8')).toContain('passive_wait:lost_ownership');
+        } finally {
+            if (waiter.exitCode === null && waiter.signalCode === null) {
+                waiter.kill('SIGKILL');
+            }
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    }, 10000);
+
+    it('does not let an older passive waiter delete a newer waiter pid file after ownership changes', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-passive-wait-handoff-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterPidPath = path.join(sessionDir, 'a2a_host_passive_wait.pid');
+        const olderStartedPath = path.join(root, 'older-started');
+        const olderReleasePath = path.join(root, 'older-release');
+        const olderWaitCountPath = path.join(root, 'older-count');
+        const newerStartedPath = path.join(root, 'newer-started');
+        const newerReleasePath = path.join(root, 'newer-release');
+        const newerWaitCountPath = path.join(root, 'newer-count');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-passive-wait.sh', path.join(scriptDir, 'a2a-passive-wait.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-passive-wait.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            headless: false,
+            sessionDir,
+            pid: 123456,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'waiting_for_local_task',
+            error: null,
+            notice: 'Passive wait is active while the local human decides the next host message.',
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+COUNT=0
+if [ -n "\${A2A_TEST_WAIT_COUNT_PATH:-}" ] && [ -f "$A2A_TEST_WAIT_COUNT_PATH" ]; then
+  COUNT="$(cat "$A2A_TEST_WAIT_COUNT_PATH")"
+fi
+COUNT=$((COUNT + 1))
+if [ -n "\${A2A_TEST_WAIT_COUNT_PATH:-}" ]; then
+  printf '%s\\n' "$COUNT" > "$A2A_TEST_WAIT_COUNT_PATH"
+fi
+if [ "$COUNT" -eq 1 ] && [ -n "\${A2A_TEST_STARTED_PATH:-}" ]; then
+  printf 'started\\n' > "$A2A_TEST_STARTED_PATH"
+fi
+if [ "$COUNT" -eq 1 ] && [ -n "\${A2A_TEST_RELEASE_PATH:-}" ]; then
+  while [ ! -f "$A2A_TEST_RELEASE_PATH" ]; do
+    sleep 0.05
+  done
+fi
+echo "TIMEOUT_WAIT_EXPIRED"
+`);
+
+        const olderWaiter = spawn('bash', [path.join(scriptDir, 'a2a-passive-wait.sh'), 'host'], {
+            cwd: root,
+            env: {
+                ...process.env,
+                A2A_DEBUG: '1',
+                A2A_TEST_STARTED_PATH: olderStartedPath,
+                A2A_TEST_RELEASE_PATH: olderReleasePath,
+                A2A_TEST_WAIT_COUNT_PATH: olderWaitCountPath,
+            },
+            stdio: 'ignore',
+        });
+
+        let newerWaiter: ReturnType<typeof spawn> | null = null;
+        try {
+            await waitForCondition(() => fs.existsSync(waiterPidPath) && fs.existsSync(olderStartedPath));
+
+            newerWaiter = spawn('bash', [path.join(scriptDir, 'a2a-passive-wait.sh'), 'host'], {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    A2A_DEBUG: '1',
+                    A2A_TEST_STARTED_PATH: newerStartedPath,
+                    A2A_TEST_RELEASE_PATH: newerReleasePath,
+                    A2A_TEST_WAIT_COUNT_PATH: newerWaitCountPath,
+                },
+                stdio: 'ignore',
+            });
+
+            await waitForCondition(() =>
+                fs.existsSync(newerStartedPath)
+                && fs.existsSync(waiterPidPath)
+                && fs.readFileSync(waiterPidPath, 'utf8').trim() === String(newerWaiter?.pid),
+            );
+
+            fs.writeFileSync(olderReleasePath, 'release\n', 'utf8');
+            await waitForCondition(() => olderWaiter.exitCode !== null || olderWaiter.signalCode !== null);
+
+            expect(olderWaiter.exitCode).toBe(0);
+            expect(fs.readFileSync(olderWaitCountPath, 'utf8').trim()).toBe('1');
+            expect(fs.existsSync(waiterPidPath)).toBe(true);
+            expect(fs.readFileSync(waiterPidPath, 'utf8').trim()).toBe(String(newerWaiter!.pid));
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8')).toContain('passive_wait:lost_ownership');
+            expect(() => process.kill(newerWaiter!.pid!, 0)).not.toThrow();
+        } finally {
+            if (newerWaiter && newerWaiter.exitCode === null && newerWaiter.signalCode === null) {
+                newerWaiter.kill('SIGTERM');
+                await waitForCondition(() => newerWaiter.exitCode !== null || newerWaiter.signalCode !== null);
+            }
+            if (olderWaiter.exitCode === null && olderWaiter.signalCode === null) {
+                olderWaiter.kill('SIGKILL');
+            }
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    }, 10000);
+
     it('does not start a new passive waiter when foreground chat reports WAIT_ALREADY_PENDING', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-wait-conflict-'));
         const scriptDir = path.join(root, 'scripts');
@@ -3356,6 +3994,96 @@ echo started >> "${waiterStartedPath}"
             expect(artifact.status).toBe('error');
             expect(artifact.lastEvent).toBe('WAIT_ALREADY_PENDING');
         } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('skips spawning a second passive waiter when one is already running during a host park handoff', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-chat-waiter-running-'));
+        const scriptDir = path.join(root, 'scripts');
+        const sessionDir = path.join(root, 'session');
+        const waiterStartedPath = path.join(root, 'waiter-started');
+        const existingWaiterPidPath = path.join(root, 'existing-waiter-pid');
+        const waiterPidPath = path.join(sessionDir, 'a2a_host_passive_wait.pid');
+        fs.mkdirSync(scriptDir, { recursive: true });
+        fs.mkdirSync(sessionDir, { recursive: true });
+
+        copyFile('.agents/skills/a2alinker/scripts/a2a-chat.sh', path.join(scriptDir, 'a2a-chat.sh'));
+        copyFile('.agents/skills/a2alinker/scripts/a2a-common.sh', path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-chat.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'waiting_for_local_task',
+            brokerEndpoint: 'http://127.0.0.1:3000',
+            headless: false,
+            sessionDir,
+            pid: null,
+            startedAt: '2026-04-18T00:00:00.000Z',
+            updatedAt: '2026-04-18T00:00:00.000Z',
+            source: 'local_cache',
+            lastEvent: 'waiting_for_local_task',
+            error: null,
+            notice: null,
+        }, null, 2), 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+nohup bash -c 'exec sleep 30' >/dev/null 2>&1 &
+WAITER_PID=$!
+printf '%s\\n' "$WAITER_PID" > "${existingWaiterPidPath}"
+printf '%s\\n' "$WAITER_PID" > "${waiterPidPath}"
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-passive-wait.sh'), `#!/bin/bash
+echo started >> "${waiterStartedPath}"
+`);
+
+        let existingWaiterPid = 0;
+        try {
+            const result = withHostToken('tok_waiter_running', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-chat.sh'), '--park', 'host', 'probe [OVER]'],
+                {
+                    cwd: root,
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                    encoding: 'utf8',
+                },
+            ));
+
+            existingWaiterPid = Number(fs.readFileSync(existingWaiterPidPath, 'utf8').trim());
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('PARKED:');
+            expect(existingWaiterPid).toBeGreaterThan(0);
+            expect(fs.existsSync(waiterStartedPath)).toBe(false);
+            expect(fs.readFileSync(waiterPidPath, 'utf8').trim()).toBe(String(existingWaiterPid));
+            expect(fs.readFileSync(path.join(sessionDir, 'a2a_debug.log'), 'utf8')).toContain('chat:start_passive_waiter skipped=waiter_running');
+
+            const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-host-session.json'), 'utf8')) as {
+                status: string;
+                lastEvent: string;
+                pid: number | null;
+                error: string | null;
+                notice: string | null;
+            };
+            expect(artifact.status).toBe('connected');
+            expect(artifact.lastEvent).toBe('foreground_chat_active');
+            expect(artifact.pid).toBeNull();
+            expect(artifact.error).toBeNull();
+            expect(artifact.notice).toBeNull();
+            expect(() => process.kill(existingWaiterPid, 0)).not.toThrow();
+        } finally {
+            if (existingWaiterPid > 0) {
+                try {
+                    process.kill(existingWaiterPid, 'SIGKILL');
+                } catch {
+                    // Existing waiter is already gone.
+                }
+            }
             fs.rmSync(root, { recursive: true, force: true });
         }
     });

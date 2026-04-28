@@ -1,8 +1,8 @@
 #!/bin/bash
 # A2A Linker — Interactive Chat Script
 # Resolves the active session role and runs the a2a-loop.sh blocking chat interface.
-# Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [host|join] "Your message [OVER]"
-# Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [host|join]  (just wait for a message)
+# Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [--surface-join-notice] [host|join] "Your message [OVER]"
+# Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [--surface-join-notice] [host|join]  (just wait for a message)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
@@ -15,6 +15,7 @@ STATUS=0
 RECOVERY_WAIT_RESULT=""
 RECOVERY_WAIT_TIMEOUT="${A2A_INFLIGHT_RECOVERY_WAIT_TIMEOUT:-5}"
 PARK_MODE=0
+SURFACE_JOIN_NOTICE=0
 HAD_PASSIVE_WAITER=0
 RESTORE_WAITER_ON_EXIT=0
 RESTORE_WAIT_STATUS=""
@@ -24,10 +25,27 @@ RESTORE_WAIT_NOTICE=""
 if [ "$(printf '%s' "${A2A_CHAT_MODE:-}" | tr '[:upper:]' '[:lower:]')" = "park" ]; then
   PARK_MODE=1
 fi
-if [ "${1:-}" = "--park" ]; then
-  PARK_MODE=1
-  shift
-fi
+case "$(printf '%s' "${A2A_SURFACE_JOIN_NOTICE:-false}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)
+    SURFACE_JOIN_NOTICE=1
+    ;;
+esac
+
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --park)
+      PARK_MODE=1
+      shift
+      ;;
+    --surface-join-notice)
+      SURFACE_JOIN_NOTICE=1
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ "${1:-}" = "host" ] || [ "${1:-}" = "join" ]; then
   ROLE="$1"
@@ -43,7 +61,7 @@ if [ -z "$ROLE" ]; then
 fi
 
 a2a_prompt_for_debug_if_interactive
-a2a_debug_log "$ROLE" "chat:start park_mode=$([ "$PARK_MODE" -eq 1 ] && echo yes || echo no) message_present=$([ -n "$MESSAGE" ] && echo yes || echo no)"
+a2a_debug_log "$ROLE" "chat:start park_mode=$([ "$PARK_MODE" -eq 1 ] && echo yes || echo no) surface_join_notice=$([ "$SURFACE_JOIN_NOTICE" -eq 1 ] && echo yes || echo no) message_present=$([ -n "$MESSAGE" ] && echo yes || echo no)"
 
 default_wait_state_for_role() {
   local role="$1"
@@ -70,7 +88,7 @@ passive_waiter_running() {
 
 stop_passive_waiter() {
   local role="$1"
-  local pid_path pid pgid target_pids
+  local pid_path pid pgid target_pids tree_stopped
   pid_path="$(a2a_waiter_pid_path_for_role "$role" 2>/dev/null || true)"
   if [ -z "$pid_path" ] || [ ! -f "$pid_path" ]; then
     return 0
@@ -109,23 +127,26 @@ stop_passive_waiter() {
     fi
     kill "$pid" 2>/dev/null || true
     for _ in 1 2 3 4 5 6; do
-      if ! ps -p "$pid" >/dev/null 2>&1; then
-        if [ -z "$pgid" ] || ! ps -axo pgid= | tr -d '[:space:]' | grep -qx "$pgid"; then
-          if [ -z "$target_pids" ] || ! printf '%s\n' "$target_pids" | while IFS= read -r child_pid; do
-            [ -n "$child_pid" ] || continue
-            if ps -p "$child_pid" >/dev/null 2>&1; then
-              exit 1
-            fi
-          done; then
-            :
-          else
-            sleep 1
-            continue
+      tree_stopped=1
+      if ps -p "$pid" >/dev/null 2>&1; then
+        tree_stopped=0
+      fi
+      if [ "$tree_stopped" -eq 1 ] && [ -n "$pgid" ] && ps -axo pgid= | tr -d '[:space:]' | grep -qx "$pgid"; then
+        tree_stopped=0
+      fi
+      if [ "$tree_stopped" -eq 1 ] && [ -n "$target_pids" ]; then
+        if printf '%s\n' "$target_pids" | while IFS= read -r child_pid; do
+          [ -n "$child_pid" ] || continue
+          if ps -p "$child_pid" >/dev/null 2>&1; then
+            exit 1
           fi
+        done; then
+          :
         else
-          sleep 1
-          continue
+          tree_stopped=0
         fi
+      fi
+      if [ "$tree_stopped" -eq 1 ]; then
         break
       fi
       sleep 1
@@ -143,8 +164,27 @@ stop_passive_waiter() {
       kill -9 "$pid" 2>/dev/null || true
     fi
   fi
+  tree_stopped=1
+  if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
+    tree_stopped=0
+  fi
+  if [ "$tree_stopped" -eq 1 ] && [ -n "$pgid" ] && ps -axo pgid= | tr -d '[:space:]' | grep -qx "$pgid"; then
+    tree_stopped=0
+  fi
+  if [ "$tree_stopped" -eq 1 ] && [ -n "$target_pids" ]; then
+    if printf '%s\n' "$target_pids" | while IFS= read -r child_pid; do
+      [ -n "$child_pid" ] || continue
+      if ps -p "$child_pid" >/dev/null 2>&1; then
+        exit 1
+      fi
+    done; then
+      :
+    else
+      tree_stopped=0
+    fi
+  fi
   rm -f "$pid_path"
-  a2a_debug_log "$role" "chat:stop_passive_waiter_complete"
+  a2a_debug_log "$role" "chat:stop_passive_waiter_complete stopped=$([ "$tree_stopped" -eq 1 ] && echo yes || echo no)"
 }
 
 sync_passive_waiter_artifact() {
@@ -179,6 +219,10 @@ start_passive_waiter() {
     a2a_update_artifact_state "$role" "waiting_for_local_task" "waiting_for_local_task" "null" "" "$(a2a_pending_message_notice_for_role "$role")"
     return 0
   fi
+  if passive_waiter_running "$role"; then
+    a2a_debug_log "$role" "chat:start_passive_waiter skipped=waiter_running"
+    return 0
+  fi
   if command -v setsid >/dev/null 2>&1; then
     A2A_PASSIVE_WAIT_STATUS="$wait_status" \
       A2A_PASSIVE_WAIT_EVENT="$wait_event" \
@@ -210,6 +254,18 @@ should_restart_passive_waiter() {
   esac
 }
 
+output_is_transport_failure() {
+  local output="$1"
+  case "$output" in
+    TIMEOUT_PING_FAILED*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 apply_output_artifact_state() {
   local role="$1"
   local output="$2"
@@ -231,7 +287,7 @@ apply_output_artifact_state() {
       a2a_update_artifact_state "$role" "error" "WAIT_UNAUTHORIZED" "null" "$output" ""
       ;;
     *MESSAGE_RECEIVED*)
-      if printf '%s\n' "$output" | grep -q '\[SYSTEM' && printf '%s\n' "$output" | grep -i -q -E '(has joined|session is live)'; then
+      if a2a_output_is_join_notice "$output"; then
         if [ "$role" = "host" ]; then
           a2a_update_artifact_state "$role" "connected" "system_joined" "null" "" "Connection established. HOST can send the first message."
         else
@@ -312,15 +368,26 @@ stage_pending_output_for_print() {
   a2a_debug_log "$role" "chat:stage_pending_output first_line=$(printf '%s' "$output" | head -n 1)"
 }
 
-clear_pending_message_for_outbound() {
-  local role="$1"
-  local pending_path
-  pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
-  if [ -z "$pending_path" ] || [ ! -f "$pending_path" ]; then
+recover_pending_join_notice_for_host_outbound() {
+  local pending_path pending_output
+  if [ "$ROLE" != "host" ] || [ -z "$MESSAGE" ]; then
     return 0
   fi
-  rm -f "$pending_path"
-  a2a_debug_log "$role" "chat:clear_pending_for_outbound"
+
+  pending_path="$(a2a_pending_message_path_for_role "$ROLE" 2>/dev/null || true)"
+  if [ -z "$pending_path" ] || [ ! -s "$pending_path" ]; then
+    return 0
+  fi
+
+  pending_output="$(cat "$pending_path")"
+  if ! a2a_output_is_join_notice "$pending_output"; then
+    return 0
+  fi
+
+  a2a_debug_log "$ROLE" "chat:recover_pending_join_notice_before_send first_line=$(printf '%s' "$pending_output" | head -n 1)"
+  print_output_recoverably "$ROLE" "$pending_output" || return $?
+  apply_output_artifact_state "$ROLE" "$pending_output"
+  return 0
 }
 
 print_output_recoverably() {
@@ -541,6 +608,7 @@ if [ -z "$MESSAGE" ]; then
 fi
 
 if [ -n "$MESSAGE" ]; then
+  recover_pending_join_notice_for_host_outbound || exit $?
   clear_pending_message_for_outbound "$ROLE"
 fi
 
@@ -548,9 +616,18 @@ if [ "$PARK_MODE" -eq 1 ]; then
   park_session
 fi
 
-OUTPUT="$(bash "$SCRIPT_DIR/a2a-loop.sh" "$ROLE" "$MESSAGE")"
+if [ "$SURFACE_JOIN_NOTICE" -eq 1 ]; then
+  OUTPUT="$(bash "$SCRIPT_DIR/a2a-loop.sh" --surface-join-notice "$ROLE" "$MESSAGE")"
+else
+  OUTPUT="$(bash "$SCRIPT_DIR/a2a-loop.sh" "$ROLE" "$MESSAGE")"
+fi
 STATUS=$?
 a2a_debug_log "$ROLE" "chat:loop_complete status=$STATUS first_line=$(printf '%s' "$OUTPUT" | head -n 1)"
+
+if [ "$STATUS" -eq 0 ] && output_is_transport_failure "$OUTPUT"; then
+  STATUS=1
+  a2a_debug_log "$ROLE" "chat:loop_transport_failure first_line=$(printf '%s' "$OUTPUT" | head -n 1)"
+fi
 
 if [ "$STATUS" -eq 0 ]; then
   if [ -n "$RESUME_NOTICE" ]; then

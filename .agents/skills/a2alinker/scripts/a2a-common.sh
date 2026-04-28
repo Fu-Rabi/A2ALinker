@@ -321,6 +321,23 @@ a2a_system_close_event_name() {
   esac
 }
 
+a2a_output_is_join_notice() {
+  local output="$1"
+  local system_body
+  if ! system_body="$(a2a_extract_system_body "$output")"; then
+    return 1
+  fi
+
+  case "$system_body" in
+    "[SYSTEM]:"*"has joined."*|"[SYSTEM]:"*"Session is live!"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 a2a_output_is_terminal_close() {
   a2a_output_close_event_name "$1" >/dev/null
 }
@@ -354,6 +371,17 @@ a2a_pending_message_path_for_role() {
   local session_dir
   session_dir="$(a2a_session_dir_for_role "$role")" || return 1
   printf '%s\n' "$session_dir/a2a_${role}_pending_message.txt"
+}
+
+clear_pending_message_for_outbound() {
+  local role="$1"
+  local pending_path
+  pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$pending_path" ] || [ ! -f "$pending_path" ]; then
+    return 0
+  fi
+  rm -f "$pending_path"
+  a2a_debug_log "$role" "chat:clear_pending_for_outbound"
 }
 
 a2a_waiter_pid_path_for_role() {

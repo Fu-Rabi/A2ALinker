@@ -51,6 +51,16 @@ update_wait_artifact() {
   a2a_update_artifact_state "$ROLE" "$status" "$last_event" "$pid_value" "$error_text" "$notice_text"
 }
 
+waiter_pid_file_owned_by_self() {
+  if [ ! -f "$PID_PATH" ]; then
+    return 1
+  fi
+
+  local tracked_pid
+  tracked_pid="$(cat "$PID_PATH" 2>/dev/null || true)"
+  [ -n "$tracked_pid" ] && [ "$tracked_pid" = "$$" ]
+}
+
 handle_terminal_result() {
   local result="$1"
   if a2a_output_is_terminal_close "$result"; then
@@ -79,7 +89,10 @@ cleanup() {
     rm -f "$WAIT_RESULT_PATH"
     WAIT_RESULT_PATH=""
   fi
-  rm -f "$PID_PATH" "$TMP_PATH"
+  if waiter_pid_file_owned_by_self; then
+    rm -f "$PID_PATH"
+  fi
+  rm -f "$TMP_PATH"
 }
 
 trap cleanup EXIT
@@ -92,6 +105,10 @@ update_wait_artifact "$WAIT_STATUS" "$WAIT_EVENT" "$$" "" "$WAIT_NOTICE"
 a2a_debug_log "$ROLE" "passive_wait:start pending_path=$PENDING_PATH"
 
 while true; do
+  if ! waiter_pid_file_owned_by_self; then
+    a2a_debug_log "$ROLE" "passive_wait:lost_ownership tracked_pid=$(cat "$PID_PATH" 2>/dev/null || true)"
+    exit 0
+  fi
   WAIT_RESULT_PATH="$(mktemp)"
   bash "$SCRIPT_DIR/a2a-wait-message.sh" "$ROLE" >"$WAIT_RESULT_PATH" &
   CURRENT_WAIT_PID=$!

@@ -7,22 +7,22 @@
 #                5+ min TIMEOUT_ROOM_ALIVE, TIMEOUT_ROOM_CLOSED,
 #                or TIMEOUT_PING_FAILED (after retries).
 #
-# Usage (wait only):   bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join]
-# Usage (send + wait): bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] "message [OVER]"
-# Usage (stdin):       bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] --stdin < message.txt
+# Usage (wait only):   bash .agents/skills/a2alinker/scripts/a2a-loop.sh [--surface-join-notice] [host|join]
+# Usage (send + wait): bash .agents/skills/a2alinker/scripts/a2a-loop.sh [--surface-join-notice] [host|join] "message [OVER]"
+# Usage (stdin):       bash .agents/skills/a2alinker/scripts/a2a-loop.sh [--surface-join-notice] [host|join] --stdin < message.txt
 
-ROLE="${1:-join}"
-MESSAGE="${2:-}"
+ROLE="join"
+MESSAGE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 MAX_PING_FAILS=3
 PING_FAIL_COUNT=0
 MAX_WAIT_CONFLICTS="${A2A_MAX_WAIT_CONFLICTS:-3}"
 WAIT_CONFLICT_COUNT=0
 SURFACE_JOIN_NOTICE=false
 READ_STDIN=false
-INFLIGHT_PATH="$(a2a_inflight_message_path_for_role "$ROLE" 2>/dev/null || true)"
+TOKEN_FILE=""
+INFLIGHT_PATH=""
 ARTIFACT_STANDBY_BYTES_THRESHOLD="${A2A_ARTIFACT_STANDBY_BYTES_THRESHOLD:-2048}"
 ARTIFACT_STANDBY_LONG_LINES_THRESHOLD="${A2A_ARTIFACT_STANDBY_LONG_LINES_THRESHOLD:-10}"
 
@@ -31,6 +31,27 @@ case "$(printf '%s' "${A2A_SURFACE_JOIN_NOTICE:-false}" | tr '[:upper:]' '[:lowe
     SURFACE_JOIN_NOTICE=true
     ;;
 esac
+
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --surface-join-notice)
+      SURFACE_JOIN_NOTICE=true
+      shift
+      ;;
+    host|join)
+      ROLE="$1"
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+MESSAGE="${1:-}"
+TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+INFLIGHT_PATH="$(a2a_inflight_message_path_for_role "$ROLE" 2>/dev/null || true)"
 
 normalize_loop_message() {
   local payload="$1"
