@@ -273,7 +273,7 @@ else
   echo "ROLE: host"
   echo "INVITE_CODE: $INVITE"
   echo "HEADLESS_SET: $HEADLESS_ARG"
-  echo 'NEXT_STEP: Share INVITE_CODE with the joiner. After the joiner connects, HOST sends the first message with: bash .agents/skills/a2alinker/scripts/a2a-loop.sh host "your message [OVER]"'
+  echo 'NEXT_STEP: Share INVITE_CODE with the joiner. Immediately keep a foreground connection wait active with: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host'
 fi
 
 exit 0

@@ -186,6 +186,7 @@ if [ "\${1:-}" = "-e" ]; then
 fi
 exec "${process.execPath}" "${fakeSupervisorPath}"
 `);
+        writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
 
         const result = spawnSync(
             'bash',
@@ -271,6 +272,7 @@ if [ "\${1:-}" = "-e" ]; then
 fi
 exec "${process.execPath}" "${fakeSupervisorPath}"
 `);
+        writeExecutable(path.join(binDir, 'codex'), '#!/bin/bash\nexit 0\n');
 
         const result = spawnSync(
             'bash',
