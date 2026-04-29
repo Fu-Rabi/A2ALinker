@@ -127,17 +127,180 @@ printf '%s\n' "$@" > "${capturedArgsPath}"
             },
         );
 
-        expect(result.status).toBe(1);
+        expect(result.status).toBe(0);
         const capturedArgs = fs.readFileSync(capturedArgsPath, 'utf8');
         expect(capturedArgs).toContain('--mode');
         expect(capturedArgs).toContain('listen');
         expect(capturedArgs).toContain('--headless');
         expect(capturedArgs).toContain('true');
         expect(result.stderr).toContain('LISTENER_START mode=unattended');
-        expect(result.stderr).toContain('Listener startup was unstable across 3 attempts');
+        expect(result.stderr).not.toContain('Verifying listener stability...');
+        expect(result.stderr).not.toContain('Listener startup was unstable');
         expect(result.stderr).toContain('RUNNER=codex');
         expect(result.stderr).toContain('WEB_ACCESS=false');
         expect(result.stderr).toContain('TESTS_BUILDS=true');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('releases an unattended listener code only after the child survives SIGHUP verification', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-hup-survive-'));
+        const binDir = path.join(root, 'bin');
+        const fakeSupervisorPath = path.join(root, 'fake-supervisor.js');
+        fs.mkdirSync(binDir, { recursive: true });
+
+        fs.writeFileSync(fakeSupervisorPath, `
+const fs = require('fs');
+const path = require('path');
+
+const artifact = path.join(process.cwd(), '.a2a-listener-session.json');
+const writeState = () => fs.writeFileSync(artifact, JSON.stringify({
+  mode: 'listen',
+  status: 'waiting_for_host',
+  listenerCode: 'listen_hupresilient',
+  brokerEndpoint: 'https://broker.a2alinker.net',
+  headless: true,
+  sessionDir: path.join(process.cwd(), 'session'),
+  pid: process.pid,
+  startedAt: '2026-04-29T00:00:00.000Z',
+  updatedAt: '2026-04-29T00:00:00.000Z',
+  source: 'local_cache',
+}, null, 2));
+
+process.on('SIGHUP', () => {
+  writeState();
+});
+writeState();
+console.log('LISTENER_CODE: listen_hupresilient');
+setInterval(() => {}, 1000);
+`, 'utf8');
+        writeExecutable(path.join(binDir, 'nohup'), `#!/bin/bash
+exec "$@"
+`);
+        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+if [ "\${1:-}" = "--check" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "-e" ]; then
+  exec "${process.execPath}" "$@"
+fi
+exec "${process.execPath}" "${fakeSupervisorPath}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'Codi'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_UNATTENDED: 'true',
+                    A2A_RUNNER_KIND: 'codex',
+                    A2A_ALLOW_WEB_ACCESS: 'true',
+                    A2A_ALLOW_TESTS_BUILDS: 'true',
+                    A2A_DETACH_LISTENER: 'true',
+                    A2A_LISTENER_MAX_ATTEMPTS: '1',
+                    A2A_LISTENER_STARTUP_TIMEOUT_SECONDS: '2',
+                    A2A_LISTENER_VERIFICATION_GRACE_SECONDS: '0',
+                    A2A_LISTENER_HUP_GRACE_SECONDS: '2',
+                    A2A_DISABLE_SETSID: 'true',
+                },
+                encoding: 'utf8',
+                timeout: 5000,
+            },
+        );
+
+        const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-listener-session.json'), 'utf8')) as Record<string, number>;
+        process.kill(Number(artifact.pid), 'SIGTERM');
+
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain('ATTEMPT_LOG:');
+        expect(result.stderr).toContain('Verifying listener stability...');
+        expect(result.stderr).toContain('Verifying listener hangup resilience...');
+        expect(result.stderr).toContain('LISTENER_CODE: listen_hupresilient');
+
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('does not release an unattended listener code when SIGHUP interrupts the child', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-supervisor-hup-fail-'));
+        const binDir = path.join(root, 'bin');
+        const fakeSupervisorPath = path.join(root, 'fake-supervisor.js');
+        fs.mkdirSync(binDir, { recursive: true });
+
+        fs.writeFileSync(fakeSupervisorPath, `
+const fs = require('fs');
+const path = require('path');
+
+const artifact = path.join(process.cwd(), '.a2a-listener-session.json');
+const baseState = {
+  mode: 'listen',
+  listenerCode: 'listen_hupfragile',
+  brokerEndpoint: 'https://broker.a2alinker.net',
+  headless: true,
+  sessionDir: path.join(process.cwd(), 'session'),
+  pid: process.pid,
+  startedAt: '2026-04-29T00:00:00.000Z',
+  updatedAt: '2026-04-29T00:00:00.000Z',
+  source: 'local_cache',
+};
+const writeState = (extra) => fs.writeFileSync(artifact, JSON.stringify({
+  ...baseState,
+  ...extra,
+}, null, 2));
+
+process.on('SIGHUP', () => {
+  writeState({ status: 'interrupted', lastEvent: 'SIGHUP' });
+  process.exit(129);
+});
+writeState({ status: 'waiting_for_host' });
+console.log('LISTENER_CODE: listen_hupfragile');
+setInterval(() => {}, 1000);
+`, 'utf8');
+        writeExecutable(path.join(binDir, 'nohup'), `#!/bin/bash
+exec "$@"
+`);
+        writeExecutable(path.join(binDir, 'node'), `#!/bin/bash
+if [ "\${1:-}" = "--check" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "-e" ]; then
+  exec "${process.execPath}" "$@"
+fi
+exec "${process.execPath}" "${fakeSupervisorPath}"
+`);
+
+        const result = spawnSync(
+            'bash',
+            [path.join(process.cwd(), '.agents/skills/a2alinker/scripts/a2a-supervisor.sh'), '--mode', 'listen', '--agent-label', 'Codi'],
+            {
+                cwd: root,
+                env: {
+                    ...process.env,
+                    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+                    A2A_BASE_URL: 'https://broker.a2alinker.net',
+                    A2A_UNATTENDED: 'true',
+                    A2A_RUNNER_KIND: 'codex',
+                    A2A_ALLOW_WEB_ACCESS: 'true',
+                    A2A_ALLOW_TESTS_BUILDS: 'true',
+                    A2A_DETACH_LISTENER: 'true',
+                    A2A_LISTENER_MAX_ATTEMPTS: '1',
+                    A2A_LISTENER_STARTUP_TIMEOUT_SECONDS: '2',
+                    A2A_LISTENER_VERIFICATION_GRACE_SECONDS: '0',
+                    A2A_LISTENER_HUP_GRACE_SECONDS: '2',
+                    A2A_DISABLE_SETSID: 'true',
+                },
+                encoding: 'utf8',
+                timeout: 5000,
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('Verifying listener hangup resilience...');
+        expect(result.stderr).toContain('Listener startup was unstable across 1 attempt');
+        expect(result.stderr).not.toContain('LISTENER_CODE: listen_hupfragile');
 
         fs.rmSync(root, { recursive: true, force: true });
     });

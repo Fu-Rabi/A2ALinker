@@ -1991,7 +1991,21 @@ async function runShellCommand(
 }
 
 function installSignalCleanup(options: MutableSupervisorOptions, session: SessionState): () => void {
+  let isHandlingSignal = false;
   const handler = (signal: NodeJS.Signals) => {
+    if (signal === 'SIGHUP' && options.mode === 'listen' && options.headless) {
+      writeSessionMetadata(session, {
+        lastIgnoredSignal: signal,
+      });
+      return;
+    }
+    if (isHandlingSignal) {
+      return;
+    }
+    isHandlingSignal = true;
+    if (options.mode === 'listen') {
+      runLeaveScript(options, 'listen', 'force');
+    }
     writeSessionMetadata(session, {
       status: 'interrupted',
       signal,
@@ -2020,7 +2034,7 @@ function cleanupLocalSession(options: MutableSupervisorOptions, session: Session
 
 function runLeaveScript(
   options: MutableSupervisorOptions,
-  role: ConversationRole,
+  role: ConversationRole | 'listen',
   authorization: 'human' | 'force' = 'human',
 ): void {
   const leaveScript = path.join(options.scriptDir, 'a2a-leave.sh');

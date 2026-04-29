@@ -1590,7 +1590,21 @@ async function runShellCommand(command, options) {
     return result.stdout;
 }
 function installSignalCleanup(options, session) {
+    let isHandlingSignal = false;
     const handler = (signal) => {
+        if (signal === 'SIGHUP' && options.mode === 'listen' && options.headless) {
+            writeSessionMetadata(session, {
+                lastIgnoredSignal: signal,
+            });
+            return;
+        }
+        if (isHandlingSignal) {
+            return;
+        }
+        isHandlingSignal = true;
+        if (options.mode === 'listen') {
+            runLeaveScript(options, 'listen', 'force');
+        }
         writeSessionMetadata(session, {
             status: 'interrupted',
             signal,

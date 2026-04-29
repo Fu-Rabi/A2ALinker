@@ -110,10 +110,6 @@ emit_listener_start_error_and_exit() {
   exit 1
 }
 
-listener_public_log_path() {
-  printf '/tmp/a2a_listener_out.log\n'
-}
-
 listener_attempt_log_path() {
   local attempt="$1"
   printf '/tmp/a2a_listener_out.%s.attempt%s.log\n' "$$" "$attempt"
@@ -146,13 +142,6 @@ listener_process_running() {
   kill -0 "$pid_value" >/dev/null 2>&1
 }
 
-listener_publish_log() {
-  local source_log="$1"
-  local public_log
-  public_log="$(listener_public_log_path)"
-  ln -sf "$source_log" "$public_log"
-}
-
 listener_cleanup_child() {
   local pid_value="$1"
   if ! listener_process_running "$pid_value"; then
@@ -174,12 +163,18 @@ listener_launch_background_supervisor() {
     (
       trap '' HUP
       exec </dev/null
+      if [ "${A2A_DISABLE_SETSID:-}" != "true" ] && command -v setsid >/dev/null 2>&1; then
+        exec nohup setsid npx "$SUPERVISOR_EXTRA" "$SUPERVISOR_TARGET" "$@" "${EXTRA_ARGS[@]}" >>"$attempt_log" 2>&1
+      fi
       exec nohup npx "$SUPERVISOR_EXTRA" "$SUPERVISOR_TARGET" "$@" "${EXTRA_ARGS[@]}" >>"$attempt_log" 2>&1
     ) &
   else
     (
       trap '' HUP
       exec </dev/null
+      if [ "${A2A_DISABLE_SETSID:-}" != "true" ] && command -v setsid >/dev/null 2>&1; then
+        exec nohup setsid "$SUPERVISOR_BIN" "$SUPERVISOR_TARGET" "$@" "${EXTRA_ARGS[@]}" >>"$attempt_log" 2>&1
+      fi
       exec nohup "$SUPERVISOR_BIN" "$SUPERVISOR_TARGET" "$@" "${EXTRA_ARGS[@]}" >>"$attempt_log" 2>&1
     ) &
   fi
@@ -253,13 +248,38 @@ listener_verify_artifact_health() {
   return 0
 }
 
+listener_verify_hup_resilience() {
+  local artifact_path="$1"
+  local expected_pid="$2"
+  local hup_grace_seconds="${3:-2}"
+  local signal_pid
+
+  if ! listener_process_running "$expected_pid"; then
+    LISTENER_VERIFY_REASON="process_missing_before_hup"
+    return 1
+  fi
+
+  signal_pid="$(listener_artifact_read_field "$artifact_path" pid || true)"
+  signal_pid="${signal_pid:-$expected_pid}"
+  if ! kill -HUP "$signal_pid" >/dev/null 2>&1; then
+    LISTENER_VERIFY_REASON="hup_signal_failed"
+    return 1
+  fi
+
+  sleep "$hup_grace_seconds"
+  if listener_verify_artifact_health "$artifact_path" "$expected_pid"; then
+    return 0
+  fi
+
+  LISTENER_VERIFY_REASON="hup_${LISTENER_VERIFY_REASON:-failed}"
+  return 1
+}
+
 run_unattended_listener_with_verification() {
-  local max_attempts=3
-  local startup_timeout_seconds=12
-  local verification_grace_seconds=3
-  local public_log
-  public_log="$(listener_public_log_path)"
-  rm -f "$public_log"
+  local max_attempts="${A2A_LISTENER_MAX_ATTEMPTS:-3}"
+  local startup_timeout_seconds="${A2A_LISTENER_STARTUP_TIMEOUT_SECONDS:-12}"
+  local verification_grace_seconds="${A2A_LISTENER_VERIFICATION_GRACE_SECONDS:-3}"
+  local hup_grace_seconds="${A2A_LISTENER_HUP_GRACE_SECONDS:-2}"
 
   local attempt attempt_log child_pid listener_code
   LISTENER_CHILD_RC=0
@@ -270,6 +290,7 @@ run_unattended_listener_with_verification() {
     attempt_log="$(listener_attempt_log_path "$attempt")"
     rm -f "$attempt_log"
     supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:listener_attempt_start attempt=$attempt log=$attempt_log"
+    emit_listener_start_line "ATTEMPT_LOG: $attempt_log"
     listener_launch_background_supervisor "$attempt_log" "$@"
     child_pid="$LISTENER_LAUNCHED_PID"
     supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:listener_attempt_pid attempt=$attempt pid=$child_pid"
@@ -280,12 +301,14 @@ run_unattended_listener_with_verification() {
       emit_listener_start_line "Verifying listener stability..."
       sleep "$verification_grace_seconds"
       if listener_verify_artifact_health "$SUPERVISOR_STATE_PATH" "$child_pid"; then
-        listener_publish_log "$attempt_log"
-        emit_listener_start_line "LISTENER_CODE: $listener_code"
-        emit_listener_start_line "STATE_FILE: $SUPERVISOR_STATE_PATH"
-        emit_listener_start_line "Listener is ready. Share this listener code with the host and keep this supervisor running."
-        supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:listener_attempt_verified attempt=$attempt pid=$child_pid"
-        return 0
+        emit_listener_start_line "Verifying listener hangup resilience..."
+        if listener_verify_hup_resilience "$SUPERVISOR_STATE_PATH" "$child_pid" "$hup_grace_seconds"; then
+          emit_listener_start_line "LISTENER_CODE: $listener_code"
+          emit_listener_start_line "STATE_FILE: $SUPERVISOR_STATE_PATH"
+          emit_listener_start_line "Listener is ready. Share this listener code with the host and keep this supervisor running."
+          supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:listener_attempt_verified attempt=$attempt pid=$child_pid"
+          return 0
+        fi
       fi
       supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:listener_attempt_unstable attempt=$attempt pid=$child_pid reason=${LISTENER_VERIFY_REASON:-unknown}"
       listener_cleanup_child "$child_pid"
@@ -306,7 +329,11 @@ run_unattended_listener_with_verification() {
     fi
   done
 
-  emit_listener_start_line "Listener startup was unstable across 3 attempts, so no code was released. Please try again in a fresh session."
+  local attempt_word="attempts"
+  if [ "$max_attempts" = "1" ]; then
+    attempt_word="attempt"
+  fi
+  emit_listener_start_line "Listener startup was unstable across $max_attempts $attempt_word, so no code was released. Please try again in a fresh session."
   return 1
 }
 
@@ -906,7 +933,7 @@ if [ "$MODE_ARG" = "host" ] && [ -n "$LISTENER_CODE_ARG" ] && [ -n "$SUPERVISOR_
   supervisor_watch_for_state_file "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "$SUPERVISOR_STATE_PATH" 8 &
 fi
 
-if [ "$MODE_ARG" = "listen" ] && [ "$SHOULD_FORCE_HEADLESS" = true ]; then
+if [ "$MODE_ARG" = "listen" ] && [ "$SHOULD_FORCE_HEADLESS" = true ] && [ "${A2A_DETACH_LISTENER:-}" = "true" ]; then
   set +e
   run_unattended_listener_with_verification "$@"
   rc=$?

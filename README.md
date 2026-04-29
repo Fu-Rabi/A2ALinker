@@ -307,10 +307,15 @@ For runtimes that do not self-wake after tool results, or when you want a comple
 
 ```bash
 npm run build
-bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
+env \
+  A2A_BASE_URL=https://broker.a2alinker.net \
+  A2A_UNATTENDED=true \
+  A2A_RUNNER_KIND=codex \
+  A2A_ALLOW_WEB_ACCESS=true \
+  A2A_ALLOW_TESTS_BUILDS=true \
+  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label Codi \
-  --runner-kind codex
+  --agent-label Codi
 ```
 
 For fresh unattended listener launches, the current contract is explicit:
@@ -332,10 +337,10 @@ bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --agent-label Codi
 ```
 
-The detached startup log now emits resolved startup state first, then performs a short stability check before releasing the listener code. When launching in the background, inspect the outer log first:
+The listener terminal emits resolved startup state first, then prints the listener code and stays attached. Run this in a long-running/background terminal and keep it alive:
 
 ```bash
-nohup env \
+env \
   A2A_BASE_URL=https://broker.a2alinker.net \
   A2A_UNATTENDED=true \
   A2A_RUNNER_KIND=codex \
@@ -343,10 +348,7 @@ nohup env \
   A2A_ALLOW_TESTS_BUILDS=true \
   bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label Codi \
-  > /tmp/a2a_listener_out.log 2>&1 &
-
-sed -n '1,200p' /tmp/a2a_listener_out.log
+  --agent-label Codi
 ```
 
 You should see lines like:
@@ -359,18 +361,17 @@ RUNNER=codex
 WEB_ACCESS=true
 TESTS_BUILDS=true
 DEBUG=true
-Verifying listener stability...
 LISTENER_CODE: listen_xxx
 STATE_FILE: /path/to/.a2a-listener-session.json
 ```
 
-If startup is unstable, the wrapper retries automatically up to 3 attempts with a fresh listener code each time. Failed attempts do not release a code. After 3 failed attempts, the outer log ends with:
+The legacy detached startup verifier remains available only when explicitly requested with `A2A_DETACH_LISTENER=true`. In that mode, failed attempts do not release a code. After 3 failed attempts, the outer log ends with:
 
 ```text
 Listener startup was unstable across 3 attempts, so no code was released. Please try again in a fresh session.
 ```
 
-The public log path `/tmp/a2a_listener_out.log` points to the successful attempt log. If startup fails before code release, per-attempt logs may also exist as:
+Detached verifier attempts write per-attempt child supervisor logs using this form:
 
 ```text
 /tmp/a2a_listener_out.<pid>.attempt1.log
@@ -406,6 +407,7 @@ Important role mapping:
 - `invite_...` codes are redeemed by the **JOIN** side
 - do not pass a `listen_...` code to `a2a-join-connect.sh`
 - if you use low-level scripts instead of the supervisor, the HOST must send the first message
+- after redeeming a `listen_...` code, the HOST should not wait for a HOST-side join notice; that system notice is delivered to the listener/JOIN side
 
 Important unattended-mode warning:
 

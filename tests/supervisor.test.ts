@@ -875,6 +875,88 @@ exit 0
         expect(infoLogs.some((entry) => entry.includes(`STATE_FILE: ${artifactPath}`))).toBe(true);
     });
 
+    it('ignores SIGHUP for a headless listener instead of closing the broker session', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const closePath = path.join(root, 'close-loop');
+        const loopStartedPath = path.join(root, 'loop-started');
+        const leaveLogPath = path.join(root, 'leave.log');
+        const artifactPath = path.join(root, '.a2a-listener-session.json');
+        let supervisorPromise: ReturnType<typeof runSupervisor> | null = null;
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+touch "${loopStartedPath}"
+while [ ! -f "${closePath}" ]; do
+  sleep 0.05
+done
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST has closed the session. You are disconnected.
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+printf '%s\\n' "$1" >> "${leaveLogPath}"
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        const exitSpy = jest.spyOn(process, 'exit').mockImplementation(((code?: string | number | null | undefined) => {
+            throw new Error(`process.exit called with ${code}`);
+        }) as never);
+
+        try {
+            supervisorPromise = runSupervisor({
+                mode: 'listen',
+                agentLabel: 'codex-like',
+                runnerCommand: `node "${runnerPath}"`,
+                headless: true,
+                scriptDir,
+                sessionRoot,
+                cwd: root,
+                logger: { info: () => undefined, error: () => undefined },
+            });
+
+            await waitFor(() => {
+                if (!fs.existsSync(loopStartedPath) || !fs.existsSync(artifactPath)) {
+                    return false;
+                }
+                const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Record<string, string>;
+                return artifact.status === 'waiting_for_host';
+            });
+
+            expect(() => process.emit('SIGHUP', 'SIGHUP')).not.toThrow();
+
+            const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Record<string, string>;
+            const metadataPath = path.join(artifact.sessionDir, 'session.json');
+            await waitFor(() => {
+                const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as Record<string, string>;
+                return metadata.lastIgnoredSignal === 'SIGHUP';
+            });
+
+            fs.writeFileSync(closePath, '1', 'utf8');
+            const session = await supervisorPromise;
+            const metadata = JSON.parse(fs.readFileSync(session.metadataPath, 'utf8')) as Record<string, string>;
+            const artifactAfterClose = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Record<string, string>;
+            const leaveLog = fs.readFileSync(leaveLogPath, 'utf8');
+
+            expect(metadata.status).toBe('closed');
+            expect(metadata.lastIgnoredSignal).toBe('SIGHUP');
+            expect(artifactAfterClose.status).toBe('closed');
+            expect(leaveLog).not.toContain('listen');
+            expect(exitSpy).not.toHaveBeenCalled();
+        } finally {
+            fs.writeFileSync(closePath, '1', 'utf8');
+            if (supervisorPromise) {
+                await supervisorPromise.catch(() => undefined);
+            }
+            exitSpy.mockRestore();
+        }
+    });
+
     it('emits a plain listener startup error line when listener setup fails', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
         const errorLogs: string[] = [];

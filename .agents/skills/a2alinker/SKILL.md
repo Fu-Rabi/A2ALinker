@@ -100,14 +100,12 @@ Launch rules:
 - if unattended was chosen, pass explicit `A2A_RUNNER_KIND`, `A2A_ALLOW_WEB_ACCESS`, and `A2A_ALLOW_TESTS_BUILDS`
 - do not call `--help` as part of normal setup
 - do not inspect `settings/`
-- **CRITICAL TOOL RULE:** You MUST execute the launch command in the background because the supervisor is a long-running daemon. If your tool supports it, set `is_background` to `true`. If your tool DOES NOT support `is_background` (e.g., in Codex CLI), you MUST wrap the command in a bash login subshell with `nohup`, redirect standard output to a file (so you can read the code), and detach it completely. The exact syntax MUST be:
-  `bash -lc "nohup env A2A_BASE_URL=<broker> A2A_UNATTENDED=true A2A_RUNNER_KIND=<runner> A2A_ALLOW_WEB_ACCESS=<true|false> A2A_ALLOW_TESTS_BUILDS=<true|false> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label <label> > /tmp/a2a_listener_out.log 2>&1 &"`
-  Then, wait 3 seconds and explicitly view the absolute path `/tmp/a2a_listener_out.log`. The wrapper now prints `Verifying listener stability...` first and only releases `LISTENER_CODE:` after the listener survives that check. Do NOT use `--status` immediately after launching, as it may return a stale cache during startup retries.
+- **CRITICAL TOOL RULE:** Start the listener with the direct `env ... bash ...` command below in a long-running/background terminal. Do not wrap Codex listener startup in `nohup`, shell detachment, retry probes, or `--status` checks before the first launch. The listener process itself must stay alive in that terminal; the turn is ready once `LISTENER_CODE:` appears.
 
 Exact launch pattern:
 
 ```bash
-A2A_BASE_URL=<broker> A2A_UNATTENDED=true A2A_RUNNER_KIND=<runner> A2A_ALLOW_WEB_ACCESS=<true|false> A2A_ALLOW_TESTS_BUILDS=<true|false> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label <label>
+env A2A_BASE_URL=<broker> A2A_UNATTENDED=true A2A_RUNNER_KIND=<runner> A2A_ALLOW_WEB_ACCESS=<true|false> A2A_ALLOW_TESTS_BUILDS=<true|false> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label <label>
 ```
 
 or interactive:
@@ -117,15 +115,14 @@ A2A_BASE_URL=<broker> bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --
 ```
 
 After launch:
-- read `/tmp/a2a_listener_out.log` for resolved startup fields such as `RUNNER=...`, `WEB_ACCESS=...`, `TESTS_BUILDS=...`, and `LISTENER_CODE: ...`
-- if the supervisor prints `Verifying listener stability...`, wait for either `LISTENER_CODE: ...` or the short unstable-startup failure message
+- read the same listener terminal output for resolved startup fields such as `RUNNER=...`, `WEB_ACCESS=...`, `TESTS_BUILDS=...`, and `LISTENER_CODE: ...`
 - only tell the user the listener code after `LISTENER_CODE: ...` appears
 - if the supervisor prints the listener state file path, do not inspect random files; use that path or `--status`
 - `--status` reports local cached session state from the repo artifact, not a live broker truth check
 - listener/session status also reports the active runner that will process unattended messages
 - if the listener is already running in the background and you need the code again, use `--status`
 - never restart a live listener just to rediscover the code
-- never use guessed log files, `find`, `nohup`, `kill`, or output redirection for normal listener recovery
+- never use guessed log files, `find`, `nohup`, `kill`, or output redirection for normal listener startup or recovery
 - **CRITICAL (UNATTENDED MODE):** If the listener was launched in unattended/headless mode, your job is DONE once the code is shared. DO NOT use Step M to check for messages. DO NOT try to answer or manage the conversation. The background supervisor and its configured runner will handle all messages autonomously.
 
 ## Step H1 — Standard Host Room
@@ -178,7 +175,7 @@ Rules:
 - do not ask for a goal just to satisfy tooling
 - do not launch host attach until the broker target is explicit
 - for remote brokers, use the direct `a2a-host-connect.sh` attach path first
-- before the first real host message, keep a foreground connection wait active with `bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host`; if it returns `TIMEOUT_PING_FAILED` before any real host message has been sent, treat that as a failed wait attempt and rerun that same surfaced join-wait path immediately. On remote brokers, request network approval/escalation if needed instead of claiming the wait is still active
+- do not wait for a HOST-side join notice after attaching to a `listen_...` code. In listener mode, the broker sends the “HOST has joined” notice to the listener/JOIN side, not to HOST
 - after the first real host message, normal Step M applies and historical join notices should not be resurfaced
 - after attaching, if no task was provided yet, remain connected and wait for the local human's first task
 - HOST still sends the first real task message
