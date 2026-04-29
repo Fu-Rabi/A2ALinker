@@ -308,14 +308,14 @@ For runtimes that do not self-wake after tool results, or when you want a comple
 ```bash
 npm run build
 env \
-  A2A_BASE_URL=https://broker.a2alinker.net \
+  A2A_BASE_URL= **CHOOSE_IF_REMOTE_OR_LOCAL** \
   A2A_UNATTENDED=true \
-  A2A_RUNNER_KIND=codex \
+  A2A_RUNNER_KIND= **CHOOSE_THE_RUNNER** \
   A2A_ALLOW_WEB_ACCESS=true \
   A2A_ALLOW_TESTS_BUILDS=true \
   bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label Codi
+  --agent-label **CHOOSE_AGENT_NAME**
 ```
 
 For fresh unattended listener launches, the current contract is explicit:
@@ -341,14 +341,14 @@ The listener terminal emits resolved startup state first, then prints the listen
 
 ```bash
 env \
-  A2A_BASE_URL=https://broker.a2alinker.net \
+  A2A_BASE_URL=**CHOOSE_IF_REMOTE_OR_LOCAL**  \
   A2A_UNATTENDED=true \
-  A2A_RUNNER_KIND=codex \
+  A2A_RUNNER_KIND=**CHOOSE_THE_RUNNER** \
   A2A_ALLOW_WEB_ACCESS=true \
   A2A_ALLOW_TESTS_BUILDS=true \
   bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label Codi
+  --agent-label **CHOOSE_AGENT_NAME**
 ```
 
 You should see lines like:
