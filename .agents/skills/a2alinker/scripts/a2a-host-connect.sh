@@ -2,13 +2,69 @@
 # A2A Linker — HOST connection script
 # Registers with the server, creates a room, and prints the invite code.
 # Optionally accepts a listen_ code to join a pre-staged listener room as HOST.
+# For standard host rooms, it can also continue directly into a live join wait
+# or a parked background wait without requiring a second top-level command.
 # Usage:
-#   bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh ["" true|false]
+#   bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh [--notify-human] [--surface-join-notice|--park] ["" true|false]
 #   bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh listen_XXXX
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
 a2a_prompt_for_debug_if_interactive
+POST_CONNECT_MODE=""
+ORIGINAL_ARGS=("$@")
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh [--notify-human] [--surface-join-notice|--park] ["" true|false]
+  bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh listen_XXXX
+
+Options:
+  --surface-join-notice  For standard host rooms, print the invite code and
+                         immediately continue into the foreground join wait.
+  --park                 For standard host rooms, print the invite code and
+                         immediately park the host wait in the background.
+  --notify-human         Best-effort local OS notification when JOIN connects.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --surface-join-notice)
+      if [ -n "$POST_CONNECT_MODE" ] && [ "$POST_CONNECT_MODE" != "surface_join_notice" ]; then
+        echo "ERROR: --surface-join-notice and --park cannot be combined."
+        exit 1
+      fi
+      POST_CONNECT_MODE="surface_join_notice"
+      shift
+      ;;
+    --park)
+      if [ -n "$POST_CONNECT_MODE" ] && [ "$POST_CONNECT_MODE" != "park" ]; then
+        echo "ERROR: --surface-join-notice and --park cannot be combined."
+        exit 1
+      fi
+      POST_CONNECT_MODE="park"
+      shift
+      ;;
+    --notify-human)
+      export A2A_HUMAN_NOTIFY=1
+      shift
+      ;;
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 LISTEN_CODE="${1:-}"
 OLD_TOKEN=""
 OLD_BASE_URL="$(a2a_resolve_saved_base_url_for_role host)"
@@ -16,6 +72,21 @@ if [ -f /tmp/a2a_host_token ]; then
   OLD_TOKEN=$(cat /tmp/a2a_host_token)
 fi
 BASE_URL="$(a2a_resolve_fresh_base_url)"
+
+a2a_debug_script_lifecycle_start "host" "host_connect.sh" "${ORIGINAL_ARGS[@]}"
+trap 'a2a_debug_script_lifecycle_end "host" "host_connect.sh" "$?"' EXIT
+host_connect_signal_exit() {
+  local signal_name="$1"
+  local exit_code="$2"
+  a2a_debug_signal_exit "host" "host_connect.sh" "$signal_name" "$exit_code"
+  exit "$exit_code"
+}
+trap 'host_connect_signal_exit HUP 129' HUP
+trap 'host_connect_signal_exit INT 130' INT
+trap 'host_connect_signal_exit QUIT 131' QUIT
+trap 'host_connect_signal_exit PIPE 141' PIPE
+trap 'host_connect_signal_exit TERM 143' TERM
+a2a_debug_log "host" "host_connect:parsed post_connect_mode=${POST_CONNECT_MODE:-none} listen_code_present=$([ -n "$LISTEN_CODE" ] && echo yes || echo no) base_url=$BASE_URL"
 
 print_connect_error() {
   local curl_exit="$1"
@@ -77,6 +148,33 @@ store_host_token() {
   if [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "$new_token" ]; then
     (curl -s --max-time 5 -X POST "$OLD_BASE_URL/leave" -H "Authorization: Bearer $OLD_TOKEN" > /dev/null 2>&1 &)
   fi
+}
+
+run_post_connect_mode() {
+  local mode_label rc
+  case "$POST_CONNECT_MODE" in
+    surface_join_notice)
+      mode_label="surface_join_notice"
+      echo "FOLLOW_UP_MODE: surface_join_notice"
+      echo 'FOLLOW_UP_DETAIL: Continuing directly into foreground host join wait.'
+      a2a_debug_log "host" "host_connect:post_connect_invoke mode=$mode_label"
+      bash "$SCRIPT_DIR/a2a-chat.sh" --surface-join-notice host
+      rc=$?
+      a2a_debug_log "host" "host_connect:post_connect_complete mode=$mode_label exit_code=$rc"
+      return "$rc"
+      ;;
+    park)
+      mode_label="park"
+      echo "FOLLOW_UP_MODE: park"
+      echo 'FOLLOW_UP_DETAIL: Parking host join wait for explicit later recovery; this is not active chat monitoring after the current turn ends.'
+      echo 'FOLLOW_UP_RECOVERY: When the other side has joined, ask to recover the host session so the join can be confirmed.'
+      a2a_debug_log "host" "host_connect:post_connect_invoke mode=$mode_label"
+      bash "$SCRIPT_DIR/a2a-chat.sh" --park host
+      rc=$?
+      a2a_debug_log "host" "host_connect:post_connect_complete mode=$mode_label exit_code=$rc"
+      return "$rc"
+      ;;
+  esac
 }
 
 host_cached_token_present() {
@@ -171,6 +269,10 @@ guard_standard_host_room_creation() {
 }
 
 if [ -n "$LISTEN_CODE" ]; then
+  if [ -n "$POST_CONNECT_MODE" ]; then
+    echo "ERROR: --surface-join-notice and --park are only valid for fresh host room creation, not listener attach."
+    exit 1
+  fi
   a2a_debug_log "host" "host_connect:start mode=listener_attach listen_code=$LISTEN_CODE base_url=$BASE_URL"
   # Listener flow: join the pre-staged room, become HOST
   # Now 1 round-trip: register + join in one call
@@ -273,7 +375,13 @@ else
   echo "ROLE: host"
   echo "INVITE_CODE: $INVITE"
   echo "HEADLESS_SET: $HEADLESS_ARG"
-  echo 'NEXT_STEP: Share INVITE_CODE with the joiner. Immediately keep a foreground connection wait active with: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host'
+  echo 'NEXT_STEP: Share INVITE_CODE with the joiner. For live same-turn monitoring use: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host'
+  echo 'NEXT_STEP: If you cannot keep the turn open, park the host session for explicit later recovery with: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --park host'
+  echo 'NEXT_STEP: If parked, tell the human: When the other side has joined, ask me to recover the host session and I will confirm whether it joined.'
+  if [ -n "$POST_CONNECT_MODE" ]; then
+    run_post_connect_mode
+    exit $?
+  fi
 fi
 
 exit 0

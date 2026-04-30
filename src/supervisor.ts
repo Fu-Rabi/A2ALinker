@@ -1781,20 +1781,44 @@ function reconcileArtifactState(artifactPath: string, artifact: SessionArtifact)
       notice: null,
     };
   } else {
+    const pendingRelayState = classifyPendingRelayState(artifact.mode, pending);
     next = {
       ...artifact,
-      status: 'waiting_for_local_task',
-      lastEvent: 'waiting_for_local_task',
+      status: pendingRelayState.status,
+      lastEvent: pendingRelayState.lastEvent,
       pid: null,
       updatedAt: new Date().toISOString(),
       error: null,
-      notice: artifact.mode === 'host'
-        ? 'A partner event is stored locally. Run a2a-chat.sh host to inspect it.'
-        : 'A host event is stored locally. Run a2a-chat.sh join to inspect it.',
+      notice: pendingRelayState.notice,
     };
   }
   fs.writeFileSync(artifactPath, JSON.stringify(next, null, 2), 'utf8');
   return next;
+}
+
+function classifyPendingRelayState(
+  mode: 'host' | 'join',
+  pending: string,
+): { status: string; lastEvent: string; notice: string } {
+  if (
+    mode === 'host'
+    && pending.startsWith('MESSAGE_RECEIVED\n[SYSTEM]:')
+    && pending.toLowerCase().includes('joined')
+  ) {
+    return {
+      status: 'join_notice_pending',
+      lastEvent: 'system_joined',
+      notice: 'Partner joined. Relay this system notification to the human and ask for the first host message.',
+    };
+  }
+
+  return {
+    status: 'waiting_for_local_task',
+    lastEvent: 'waiting_for_local_task',
+    notice: mode === 'host'
+      ? 'A partner event is stored locally. Run a2a-chat.sh host to inspect it.'
+      : 'A host event is stored locally. Run a2a-chat.sh join to inspect it.',
+  };
 }
 
 function isProcessRunning(pid: number): boolean {

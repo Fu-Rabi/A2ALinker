@@ -162,6 +162,34 @@ describe('runSupervisor', () => {
         expect(artifact.lastEvent).toBe('room_closed');
     });
 
+    it('preserves a staged host join notice as pending relay state', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-join-notice-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'connected',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            attachedListenerCode: null,
+            inviteCode: 'invite_demo123',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_host_pending_message.txt'), `MESSAGE_RECEIVED
+[SYSTEM]: Partner 'Agent-join' has joined. Session is live!
+`, 'utf8');
+
+        const artifact = readHostSessionArtifact(root);
+
+        expect(artifact.status).toBe('join_notice_pending');
+        expect(artifact.lastEvent).toBe('system_joined');
+        expect(artifact.notice).toBe('Partner joined. Relay this system notification to the human and ask for the first host message.');
+    });
+
     it('upgrades stale host status to mailbox error when the pending event is stronger than liveness', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-stale-mailbox-'));
         const sessionDir = path.join(root, 'session');

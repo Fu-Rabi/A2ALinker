@@ -6,6 +6,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
+ORIGINAL_ARGS=("$@")
 ROLE="${1:-host}"
 TOKEN_FILE="/tmp/a2a_${ROLE}_token"
 WAIT_POLL_TIMEOUT="${A2A_WAIT_POLL_TIMEOUT:-15}"
@@ -15,8 +16,12 @@ CURRENT_CURL_OUT=""
 CURRENT_CURL_ERR_FILE=""
 CURL_CAPTURE_ERR=""
 
+a2a_debug_script_lifecycle_start "$ROLE" "a2a-wait-message.sh" "${ORIGINAL_ARGS[@]}"
+a2a_debug_log "$ROLE" "wait:context timeout=${WAIT_POLL_TIMEOUT}s base_url=$BASE_URL"
+
 cleanup_active_curl() {
   if [ -n "$CURRENT_CURL_PID" ]; then
+    a2a_debug_log "$ROLE" "wait:cleanup_active_curl pid=$CURRENT_CURL_PID"
     kill "$CURRENT_CURL_PID" 2>/dev/null || true
     wait "$CURRENT_CURL_PID" 2>/dev/null || true
     CURRENT_CURL_PID=""
@@ -31,6 +36,21 @@ cleanup_active_curl() {
   fi
 }
 
+wait_message_on_exit() {
+  local exit_code="$?"
+  cleanup_active_curl
+  a2a_debug_script_lifecycle_end "$ROLE" "a2a-wait-message.sh" "$exit_code"
+}
+
+wait_message_signal_exit() {
+  local signal_name="$1"
+  local exit_code="$2"
+  a2a_debug_log "$ROLE" "wait:signal signal=$signal_name exit_code=$exit_code current_curl_pid=${CURRENT_CURL_PID:-none}"
+  cleanup_active_curl
+  a2a_debug_signal_exit "$ROLE" "a2a-wait-message.sh" "$signal_name" "$exit_code"
+  exit "$exit_code"
+}
+
 run_curl_capture() {
   local response_var="$1"
   local exit_var="$2"
@@ -41,6 +61,7 @@ run_curl_capture() {
   CURRENT_CURL_ERR_FILE="$(mktemp)"
   curl "$@" >"$CURRENT_CURL_OUT" 2>"$CURRENT_CURL_ERR_FILE" &
   CURRENT_CURL_PID=$!
+  a2a_debug_log "$ROLE" "wait:curl_spawn pid=$CURRENT_CURL_PID"
 
   local curl_exit
   if wait "$CURRENT_CURL_PID"; then
@@ -57,13 +78,17 @@ run_curl_capture() {
   CURRENT_CURL_OUT=""
   CURRENT_CURL_ERR_FILE=""
 
+  a2a_debug_log "$ROLE" "wait:curl_exit exit_code=$curl_exit body_present=$([ -n "$response" ] && echo yes || echo no) err_present=$([ -n "$CURL_CAPTURE_ERR" ] && echo yes || echo no)"
   printf -v "$response_var" '%s' "$response"
   printf -v "$exit_var" '%s' "$curl_exit"
 }
 
-trap 'cleanup_active_curl' EXIT
-trap 'cleanup_active_curl; exit 130' INT
-trap 'cleanup_active_curl; exit 143' TERM
+trap wait_message_on_exit EXIT
+trap 'wait_message_signal_exit HUP 129' HUP
+trap 'wait_message_signal_exit INT 130' INT
+trap 'wait_message_signal_exit QUIT 131' QUIT
+trap 'wait_message_signal_exit PIPE 141' PIPE
+trap 'wait_message_signal_exit TERM 143' TERM
 
 listener_closed_locally() {
   local artifact_path status

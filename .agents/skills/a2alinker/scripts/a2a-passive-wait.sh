@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
+ORIGINAL_ARGS=("$@")
 
 ROLE="${1:-host}"
 PENDING_PATH="$(a2a_pending_message_path_for_role "$ROLE")"
@@ -20,6 +21,9 @@ INACTIVITY_THRESHOLD_MS=$((INACTIVITY_THRESHOLD_SECONDS * 1000))
 INACTIVITY_NOTICE_EMITTED=0
 CURRENT_WAIT_PID=""
 WAIT_RESULT_PATH=""
+
+a2a_debug_script_lifecycle_start "$ROLE" "a2a-passive-wait.sh" "${ORIGINAL_ARGS[@]}"
+a2a_debug_log "$ROLE" "passive_wait:context wait_status=$WAIT_STATUS wait_event=$WAIT_EVENT notice=$(a2a_debug_shell_quote "${WAIT_NOTICE:-}") inactivity_threshold_s=$INACTIVITY_THRESHOLD_SECONDS notify_tty=$(a2a_debug_shell_quote "${A2A_PASSIVE_NOTIFY_TTY:-none}")"
 
 default_wait_status() {
   case "$ROLE" in
@@ -42,6 +46,8 @@ if [ -z "${WAIT_NOTICE+x}" ]; then
   WAIT_NOTICE="$(a2a_wait_notice_for_role_state "$ROLE" "$WAIT_STATUS")"
 fi
 
+a2a_debug_log "$ROLE" "passive_wait:resolved wait_status=$WAIT_STATUS wait_event=$WAIT_EVENT notice=$(a2a_debug_shell_quote "${WAIT_NOTICE:-}")"
+
 update_wait_artifact() {
   local status="$1"
   local last_event="$2"
@@ -63,6 +69,7 @@ waiter_pid_file_owned_by_self() {
 
 handle_terminal_result() {
   local result="$1"
+  local pending_status pending_event pending_notice
   if a2a_output_is_terminal_close "$result"; then
     update_wait_artifact "closed" "$(a2a_output_close_event_name "$result")" "null" "" ""
     return 0
@@ -74,7 +81,10 @@ handle_terminal_result() {
       update_wait_artifact "error" "$pending_event" "null" "$result" ""
       ;;
     *)
-      update_wait_artifact "waiting_for_local_task" "waiting_for_local_task" "null" "" "$(a2a_pending_message_notice_for_role "$ROLE")"
+      pending_status="$(a2a_pending_message_status_for_output "$ROLE" "$result")"
+      pending_event="$(a2a_pending_message_event_for_output "$ROLE" "$result")"
+      pending_notice="$(a2a_pending_message_notice_for_output "$ROLE" "$result")"
+      update_wait_artifact "$pending_status" "$pending_event" "null" "" "$pending_notice"
       ;;
   esac
 }
@@ -95,9 +105,27 @@ cleanup() {
   rm -f "$TMP_PATH"
 }
 
-trap cleanup EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+passive_wait_on_exit() {
+  local exit_code="$?"
+  cleanup
+  a2a_debug_script_lifecycle_end "$ROLE" "a2a-passive-wait.sh" "$exit_code"
+}
+
+passive_wait_signal_exit() {
+  local signal_name="$1"
+  local exit_code="$2"
+  a2a_debug_log "$ROLE" "passive_wait:signal signal=$signal_name exit_code=$exit_code current_wait_pid=${CURRENT_WAIT_PID:-none}"
+  cleanup
+  a2a_debug_signal_exit "$ROLE" "a2a-passive-wait.sh" "$signal_name" "$exit_code"
+  exit "$exit_code"
+}
+
+trap passive_wait_on_exit EXIT
+trap 'passive_wait_signal_exit HUP 129' HUP
+trap 'passive_wait_signal_exit INT 130' INT
+trap 'passive_wait_signal_exit QUIT 131' QUIT
+trap 'passive_wait_signal_exit PIPE 141' PIPE
+trap 'passive_wait_signal_exit TERM 143' TERM
 
 mkdir -p "$(dirname "$PENDING_PATH")"
 printf '%s\n' "$$" > "$PID_PATH"
@@ -112,6 +140,7 @@ while true; do
   WAIT_RESULT_PATH="$(mktemp)"
   bash "$SCRIPT_DIR/a2a-wait-message.sh" "$ROLE" >"$WAIT_RESULT_PATH" &
   CURRENT_WAIT_PID=$!
+  a2a_debug_log "$ROLE" "passive_wait:spawn wait_pid=$CURRENT_WAIT_PID"
   if wait "$CURRENT_WAIT_PID"; then
     WAIT_EXIT=0
   else
@@ -121,6 +150,7 @@ while true; do
   rm -f "$WAIT_RESULT_PATH"
   WAIT_RESULT_PATH=""
   CURRENT_WAIT_PID=""
+  a2a_debug_log "$ROLE" "passive_wait:child_exit status=$WAIT_EXIT first_line=$(printf '%s' "$RESULT" | head -n 1)"
   a2a_debug_log "$ROLE" "passive_wait:result first_line=$(printf '%s' "$RESULT" | head -n 1)"
 
   if [ -z "$RESULT" ]; then
@@ -148,6 +178,8 @@ while true; do
       printf '%s\n' "$RESULT" > "$TMP_PATH"
       mv "$TMP_PATH" "$PENDING_PATH"
       handle_terminal_result "$RESULT"
+      a2a_notify_host_join_terminal "$ROLE" "$RESULT" || true
+      a2a_notify_host_join_human "$ROLE" "$RESULT" || true
       a2a_debug_log "$ROLE" "passive_wait:stored_message first_line=$(printf '%s' "$RESULT" | head -n 1)"
       exit 0
       ;;

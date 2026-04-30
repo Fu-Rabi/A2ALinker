@@ -227,6 +227,27 @@ a2a_update_artifact_state() {
   ' "$artifact_path" "$status" "$last_event" "$pid_value" "$error_text" "$notice_text" >/dev/null 2>&1 || true
 }
 
+a2a_capture_notification_tty() {
+  if [ -n "${A2A_RELAY_NOTIFY_TTY:-}" ]; then
+    printf '%s\n' "$A2A_RELAY_NOTIFY_TTY"
+    return 0
+  fi
+  if [ -n "${A2A_PASSIVE_NOTIFY_TTY:-}" ]; then
+    printf '%s\n' "$A2A_PASSIVE_NOTIFY_TTY"
+    return 0
+  fi
+  if [ -t 2 ]; then
+    tty <&2 2>/dev/null && return 0
+  fi
+  if [ -t 1 ]; then
+    tty <&1 2>/dev/null && return 0
+  fi
+  if [ -t 0 ]; then
+    tty 2>/dev/null && return 0
+  fi
+  return 1
+}
+
 a2a_wait_notice_for_role_state() {
   local role="$1"
   local status="$2"
@@ -240,6 +261,9 @@ a2a_wait_notice_for_role_state() {
       ;;
     waiting_for_host_message)
       printf '%s\n' "Passive wait is active while the host sends the next message."
+      ;;
+    waiting_for_join)
+      printf '%s\n' "Passive wait is active while the joiner connects. If this turn ends, recover with the surfaced host join wait."
       ;;
     waiting_for_local_task)
       if [ "$role" = "host" ]; then
@@ -261,6 +285,36 @@ a2a_pending_message_notice_for_role() {
   else
     printf '%s\n' "A host event is stored locally. Run a2a-chat.sh join to inspect it."
   fi
+}
+
+a2a_pending_message_status_for_output() {
+  local role="$1"
+  local output="${2-}"
+  if [ "$role" = "host" ] && a2a_output_is_join_notice "$output"; then
+    printf '%s\n' "join_notice_pending"
+    return 0
+  fi
+  printf '%s\n' "waiting_for_local_task"
+}
+
+a2a_pending_message_event_for_output() {
+  local role="$1"
+  local output="${2-}"
+  if [ "$role" = "host" ] && a2a_output_is_join_notice "$output"; then
+    printf '%s\n' "system_joined"
+    return 0
+  fi
+  printf '%s\n' "waiting_for_local_task"
+}
+
+a2a_pending_message_notice_for_output() {
+  local role="$1"
+  local output="${2-}"
+  if [ "$role" = "host" ] && a2a_output_is_join_notice "$output"; then
+    printf '%s\n' "Partner joined. Relay this system notification to the human and ask for the first host message."
+    return 0
+  fi
+  a2a_pending_message_notice_for_role "$role"
 }
 
 a2a_inactivity_notice_for_role_state() {
@@ -336,6 +390,168 @@ a2a_output_is_join_notice() {
       return 1
       ;;
   esac
+}
+
+a2a_sanitize_terminal_notification() {
+  LC_ALL=C perl -pe 's/\e\[[0-?]*[ -\/]*[@-~]//g; s/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]//g'
+}
+
+a2a_notify_host_join_terminal() {
+  local role="$1"
+  local output="$2"
+  local notify_tty="${3:-${A2A_RELAY_NOTIFY_TTY:-${A2A_PASSIVE_NOTIFY_TTY:-}}}"
+  local clean_output
+  local tty_exists="no"
+  local tty_writable="no"
+
+  if [ "$role" != "host" ] || ! a2a_output_is_join_notice "$output"; then
+    return 0
+  fi
+  if [ -n "$notify_tty" ] && [ -e "$notify_tty" ]; then
+    tty_exists="yes"
+  fi
+  if [ -n "$notify_tty" ] && [ -w "$notify_tty" ]; then
+    tty_writable="yes"
+  fi
+  a2a_debug_log "$role" "notify:host_join_tty path=$(a2a_debug_shell_quote "${notify_tty:-none}") exists=$tty_exists writable=$tty_writable"
+  if [ -z "$notify_tty" ] || [ ! -w "$notify_tty" ]; then
+    a2a_debug_log "$role" "notify:host_join_tty skipped=unavailable"
+    return 0
+  fi
+
+  clean_output="$(printf '%s\n' "$output" | a2a_sanitize_terminal_notification)"
+  if {
+    printf '\nA2A_LINKER_JOIN_NOTICE\n'
+    printf '%s\n' "$clean_output"
+    printf 'A2A_LINKER_PROMPT: What is the first host message you want sent?\n'
+  } >> "$notify_tty" 2>/dev/null; then
+    a2a_debug_log "$role" "notify:host_join_tty write=ok path=$(a2a_debug_shell_quote "$notify_tty")"
+  else
+    a2a_debug_log "$role" "notify:host_join_tty write=failed path=$(a2a_debug_shell_quote "$notify_tty")"
+    return 0
+  fi
+}
+
+a2a_join_notification_artifact_path_for_role() {
+  local role="$1"
+  local session_dir
+  session_dir="$(a2a_session_dir_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$session_dir" ]; then
+    return 1
+  fi
+  printf '%s\n' "$session_dir/a2a_${role}_join_notification.json"
+}
+
+a2a_extract_join_partner_label() {
+  local output="$1"
+  local system_body
+  if ! system_body="$(a2a_extract_system_body "$output")"; then
+    return 1
+  fi
+
+  printf '%s\n' "$system_body" | sed -En "s/.*(Partner|HOST|JOIN|Agent) '([^']+)'.*/\2/p" | head -n 1
+}
+
+a2a_write_host_join_notification_artifact() {
+  local role="$1"
+  local output="$2"
+  local notified_human="${3:-false}"
+  local human_notify_status="${4:-skipped}"
+  local artifact_path session_artifact invite_code partner_label pending_path event_timestamp
+
+  if [ "$role" != "host" ] || ! a2a_output_is_join_notice "$output"; then
+    return 0
+  fi
+
+  artifact_path="$(a2a_join_notification_artifact_path_for_role "$role" 2>/dev/null || true)"
+  if [ -z "$artifact_path" ]; then
+    a2a_debug_log "$role" "human_notify:artifact skipped=no_session_dir"
+    return 0
+  fi
+
+  session_artifact="$(a2a_artifact_path_for_role "$role" 2>/dev/null || true)"
+  invite_code=""
+  if [ -n "$session_artifact" ]; then
+    invite_code="$(a2a_read_field_from_artifact "$session_artifact" "inviteCode" 2>/dev/null || true)"
+  fi
+  partner_label="$(a2a_extract_join_partner_label "$output" 2>/dev/null || true)"
+  pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
+  event_timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  mkdir -p "$(dirname "$artifact_path")"
+  node -e '
+    const fs = require("fs");
+    const [
+      artifactPath,
+      inviteCode,
+      partnerLabel,
+      eventTimestamp,
+      pendingPayloadPath,
+      notifiedHumanRaw,
+      humanNotifyStatus,
+    ] = process.argv.slice(1);
+    let prior = {};
+    try {
+      prior = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+    } catch {
+      prior = {};
+    }
+    const notifiedHuman = prior.notifiedHuman === true || notifiedHumanRaw === "true";
+    const data = {
+      inviteCode: inviteCode || null,
+      partnerLabel: partnerLabel || null,
+      eventTimestamp,
+      pendingPayloadPath: pendingPayloadPath || null,
+      notifiedHuman,
+      humanNotifyStatus: prior.notifiedHuman === true && notifiedHumanRaw !== "true"
+        ? (prior.humanNotifyStatus || "sent")
+        : humanNotifyStatus,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(artifactPath, JSON.stringify(data, null, 2));
+  ' "$artifact_path" "$invite_code" "$partner_label" "$event_timestamp" "$pending_path" "$notified_human" "$human_notify_status" >/dev/null 2>&1 || true
+}
+
+a2a_human_notify_enabled() {
+  case "$(printf '%s' "${A2A_HUMAN_NOTIFY:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+a2a_notify_host_join_human() {
+  local role="$1"
+  local output="$2"
+
+  if [ "$role" != "host" ] || ! a2a_output_is_join_notice "$output"; then
+    return 0
+  fi
+
+  a2a_debug_log "$role" "human_notify:start"
+  a2a_write_host_join_notification_artifact "$role" "$output" "false" "skipped"
+
+  if ! a2a_human_notify_enabled; then
+    a2a_debug_log "$role" "human_notify=skipped"
+    return 0
+  fi
+
+  if ! command -v osascript >/dev/null 2>&1; then
+    a2a_write_host_join_notification_artifact "$role" "$output" "false" "unavailable"
+    a2a_debug_log "$role" "human_notify=unavailable"
+    return 0
+  fi
+
+  if osascript -e 'display notification "Partner joined" with title "A2A Linker"' >/dev/null 2>&1; then
+    a2a_write_host_join_notification_artifact "$role" "$output" "true" "sent"
+    a2a_debug_log "$role" "human_notify=sent"
+  else
+    a2a_write_host_join_notification_artifact "$role" "$output" "false" "failed"
+    a2a_debug_log "$role" "human_notify=failed"
+  fi
 }
 
 a2a_output_is_terminal_close() {
@@ -525,6 +741,182 @@ a2a_debug_compact_text() {
     value="${value:0:200}..."
   fi
   printf '%s' "$value"
+}
+
+a2a_debug_shell_quote() {
+  printf '%q' "${1:-}"
+}
+
+a2a_debug_ps_field_raw() {
+  local pid="$1"
+  local field="$2"
+  ps -o "${field}=" -p "$pid" 2>/dev/null | head -n 1
+}
+
+a2a_debug_join_args() {
+  local joined="" arg quoted
+  if [ "$#" -eq 0 ]; then
+    printf '%s' "<none>"
+    return 0
+  fi
+  for arg in "$@"; do
+    quoted="$(a2a_debug_shell_quote "$arg")"
+    if [ -n "$joined" ]; then
+      joined="$joined $quoted"
+    else
+      joined="$quoted"
+    fi
+  done
+  printf '%s' "$joined"
+}
+
+a2a_now_ms() {
+  if command -v node >/dev/null 2>&1; then
+    node -e 'process.stdout.write(String(Date.now()))' 2>/dev/null && return 0
+  fi
+  printf '%s000\n' "$(date +%s)"
+}
+
+a2a_debug_tty_state() {
+  local fd="$1"
+  if [ -t "$fd" ]; then
+    printf '%s' "yes"
+  else
+    printf '%s' "no"
+  fi
+}
+
+a2a_debug_tty_path() {
+  local fd="$1"
+  if ! [ -t "$fd" ]; then
+    printf '%s' "none"
+    return 0
+  fi
+  case "$fd" in
+    0)
+      tty 2>/dev/null || printf '%s' "unknown"
+      ;;
+    1)
+      tty <&1 2>/dev/null || printf '%s' "unknown"
+      ;;
+    2)
+      tty <&2 2>/dev/null || printf '%s' "unknown"
+      ;;
+    *)
+      printf '%s' "unsupported"
+      ;;
+  esac
+}
+
+a2a_debug_process_field() {
+  local pid="$1"
+  local field="$2"
+  local value
+  case "$field" in
+    sid)
+      value="$(a2a_debug_ps_field_raw "$pid" "sid" | tr -d '[:space:]')"
+      if ! printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
+        value="$(a2a_debug_ps_field_raw "$pid" "sess" | tr -d '[:space:]')"
+      fi
+      ;;
+    *)
+      value="$(a2a_debug_ps_field_raw "$pid" "$field" | tr -d '[:space:]')"
+      ;;
+  esac
+  case "$field" in
+    pgid|ppid|pid|sid)
+      if ! printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
+        value=""
+      fi
+      ;;
+  esac
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "unknown"
+  fi
+}
+
+a2a_debug_process_command() {
+  local pid="$1"
+  local command_text
+  command_text="$(ps -o command= -p "$pid" 2>/dev/null | head -n 1)"
+  command_text="$(a2a_debug_compact_text "$command_text")"
+  if [ -n "$command_text" ]; then
+    a2a_debug_shell_quote "$command_text"
+  else
+    printf '%s' "unknown"
+  fi
+}
+
+a2a_debug_runtime_context() {
+  local role="$1"
+  local label="$2"
+  shift 2 || true
+  local stdin_tty stdout_tty stderr_tty stdin_path stdout_path stderr_path pgid sid tty_name parent_cmd self_cmd
+  stdin_tty="$(a2a_debug_tty_state 0)"
+  stdout_tty="$(a2a_debug_tty_state 1)"
+  stderr_tty="$(a2a_debug_tty_state 2)"
+  stdin_path="$(a2a_debug_shell_quote "$(a2a_debug_tty_path 0)")"
+  stdout_path="$(a2a_debug_shell_quote "$(a2a_debug_tty_path 1)")"
+  stderr_path="$(a2a_debug_shell_quote "$(a2a_debug_tty_path 2)")"
+  pgid="$(a2a_debug_process_field "$$" "pgid")"
+  sid="$(a2a_debug_process_field "$$" "sid")"
+  tty_name="$(a2a_debug_process_field "$$" "tty")"
+  parent_cmd="$(a2a_debug_process_command "$PPID")"
+  self_cmd="$(a2a_debug_process_command "$$")"
+  a2a_debug_log "$role" "$label stdin_tty=$stdin_tty stdout_tty=$stdout_tty stderr_tty=$stderr_tty stdin_path=$stdin_path stdout_path=$stdout_path stderr_path=$stderr_path ppid=$PPID pgid=$pgid sid=$sid tty=$tty_name parent_cmd=$parent_cmd self_cmd=$self_cmd $*"
+}
+
+a2a_debug_runtime_checkpoint() {
+  local role="$1"
+  local label="$2"
+  shift 2 || true
+  a2a_debug_runtime_context "$role" "$label" "checkpoint_ms=$(a2a_now_ms)" "$@"
+}
+
+a2a_debug_script_lifecycle_start() {
+  local role="$1"
+  local script_name="$2"
+  shift 2 || true
+  unset A2A_DEBUG_SCRIPT_END_EMITTED
+  export A2A_DEBUG_SCRIPT_START_MS="$(a2a_now_ms)"
+  a2a_debug_log "$role" "script:$script_name start started_ms=${A2A_DEBUG_SCRIPT_START_MS:-unknown} argv=$(a2a_debug_join_args "$@")"
+  a2a_debug_runtime_context "$role" "script:$script_name context"
+}
+
+a2a_debug_script_lifecycle_end() {
+  local role="$1"
+  local script_name="$2"
+  local exit_code="${3:-0}"
+  if [ "${A2A_DEBUG_SCRIPT_END_EMITTED:-0}" = "1" ]; then
+    return 0
+  fi
+  export A2A_DEBUG_SCRIPT_END_EMITTED=1
+  local end_ms start_ms duration_ms
+  end_ms="$(a2a_now_ms)"
+  start_ms="${A2A_DEBUG_SCRIPT_START_MS:-$end_ms}"
+  a2a_debug_runtime_checkpoint "$role" "script:$script_name end_context" "exit_code=$exit_code"
+  case "$start_ms:$end_ms" in
+    *[!0-9:]*)
+      duration_ms="unknown"
+      ;;
+    *)
+      duration_ms="$((end_ms - start_ms))"
+      ;;
+  esac
+  a2a_debug_log "$role" "script:$script_name end exit_code=$exit_code started_ms=$start_ms ended_ms=$end_ms duration_ms=$duration_ms"
+}
+
+a2a_debug_signal_exit() {
+  local role="$1"
+  local script_name="$2"
+  local signal_name="$3"
+  local exit_code="${4:-0}"
+  shift 4 || true
+  a2a_debug_log "$role" "script:$script_name signal signal=$signal_name exit_code=$exit_code $*"
+  a2a_debug_runtime_checkpoint "$role" "script:$script_name signal_context" "signal=$signal_name" "exit_code=$exit_code" "$@"
+  a2a_debug_script_lifecycle_end "$role" "$script_name" "$exit_code"
 }
 
 a2a_is_remote_base_url() {
