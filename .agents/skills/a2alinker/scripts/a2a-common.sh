@@ -1,5 +1,75 @@
 #!/bin/bash
 
+a2a_human_status() {
+  printf 'A2A: %s\n' "$*" >&2
+}
+
+a2a_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|y|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+a2a_falsey() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|n|off)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+a2a_runtime_is_codex() {
+  local runtime_hint pid depth command parent_pid
+  runtime_hint="${A2A_RUNTIME:-${A2A_AGENT_RUNTIME:-${A2A_CLIENT_RUNTIME:-}}}"
+  case "$(printf '%s' "$runtime_hint" | tr '[:upper:]' '[:lower:]')" in
+    codex|codex-*|*codex*)
+      return 0
+      ;;
+  esac
+
+  if [ -n "${CODEX_THREAD_ID:-}" ] || [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_CI:-}" ]; then
+    return 0
+  fi
+
+  pid="$PPID"
+  depth=0
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$depth" -lt 8 ]; do
+    command="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    case "$(printf '%s' "$command" | tr '[:upper:]' '[:lower:]')" in
+      *codex*)
+        return 0
+        ;;
+    esac
+    parent_pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    [ "$parent_pid" != "$pid" ] || break
+    pid="$parent_pid"
+    depth=$((depth + 1))
+  done
+
+  return 1
+}
+
+a2a_foreground_keepalive_enabled() {
+  if [ -n "${A2A_FOREGROUND_KEEPALIVE+x}" ]; then
+    if a2a_truthy "$A2A_FOREGROUND_KEEPALIVE"; then
+      return 0
+    fi
+    if a2a_falsey "$A2A_FOREGROUND_KEEPALIVE"; then
+      return 1
+    fi
+  fi
+
+  a2a_runtime_is_codex
+}
+
 a2a_read_broker_from_artifact() {
   local artifact_path="$1"
   if [ ! -f "$artifact_path" ]; then

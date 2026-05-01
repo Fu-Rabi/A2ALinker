@@ -3,6 +3,7 @@
 # Resolves the active session role and runs the a2a-loop.sh blocking chat interface.
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [--surface-join-notice] [host|join] "Your message [OVER]"
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [--surface-join-notice] [host|join]  (just wait for a message)
+# Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh [--surface-join-notice] [host|join] --stdin < message.txt
 # Usage: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --pending-only [host|join]
 # Add --notify-human to enable best-effort local OS notification for HOST join notices.
 
@@ -17,9 +18,12 @@ OUTPUT=""
 STATUS=0
 RECOVERY_WAIT_RESULT=""
 RECOVERY_WAIT_TIMEOUT="${A2A_INFLIGHT_RECOVERY_WAIT_TIMEOUT:-5}"
+ACTIVE_WAIT_RECOVERY_TIMEOUT="${A2A_ACTIVE_WAIT_RECOVERY_TIMEOUT:-90}"
+PRE_JOIN_TRANSPORT_FAILURE=0
 PARK_MODE=0
 SURFACE_JOIN_NOTICE=0
 PENDING_ONLY=0
+READ_STDIN=0
 HAD_PASSIVE_WAITER=0
 RESTORE_WAITER_ON_EXIT=0
 RESTORE_WAIT_STATUS=""
@@ -49,6 +53,10 @@ while [ $# -gt 0 ]; do
       PENDING_ONLY=1
       shift
       ;;
+    --stdin)
+      READ_STDIN=1
+      shift
+      ;;
     --notify-human)
       export A2A_HUMAN_NOTIFY=1
       shift
@@ -67,9 +75,22 @@ else
   MESSAGE="${1:-}"
 fi
 
+if [ "$MESSAGE" = "--stdin" ]; then
+  READ_STDIN=1
+  MESSAGE=""
+fi
+
 if [ -z "$ROLE" ]; then
   echo "ERROR: Not connected. No active role token found." >&2
   exit 1
+fi
+
+if [ "$READ_STDIN" -eq 1 ]; then
+  MESSAGE="$(cat)"
+  if [ -z "$MESSAGE" ]; then
+    echo "ERROR: No message provided on stdin." >&2
+    exit 1
+  fi
 fi
 
 a2a_debug_script_lifecycle_start "$ROLE" "a2a-chat.sh" "${ORIGINAL_ARGS[@]}"
@@ -103,6 +124,16 @@ host_pre_join_wait_required() {
   return 0
 }
 
+host_surface_join_recovery_command() {
+  local base_url
+  base_url="$(a2a_resolve_active_base_url_for_role host 2>/dev/null || true)"
+  if [ -n "$base_url" ] && a2a_is_remote_base_url "$base_url"; then
+    printf 'env A2A_BASE_URL=%s bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host\n' "$base_url"
+  else
+    printf 'bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host\n'
+  fi
+}
+
 pending_only_recovery_required() {
   local role="$1"
   local artifact_path status error_text pid_value pid_path pid_file_value
@@ -118,6 +149,11 @@ pending_only_recovery_required() {
   pid_value="$(a2a_read_field_from_artifact "$artifact_path" "pid" 2>/dev/null || true)"
   if [ "$status" = "stale_local_state" ]; then
     return 0
+  fi
+  if host_session_has_invite && ! host_join_notice_artifact_exists; then
+    if [ -z "$pid_value" ] || [ "$pid_value" = "null" ]; then
+      return 0
+    fi
   fi
   case "$error_text" in
     *"no longer running"*|*"not running"*)
@@ -144,7 +180,7 @@ if [ "$PENDING_ONLY" -eq 1 ]; then
   elif pending_only_recovery_required "$ROLE"; then
     printf '%s\n' "RECOVERY_REQUIRED"
     printf '%s\n' "REASON: Local parked host waiter is not running and no join notice is staged."
-    printf '%s\n' "NEXT_STEP: Reattach the surfaced host join wait with: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host"
+    printf '%s\n' "NEXT_STEP: Reattach the surfaced host join wait with: $(host_surface_join_recovery_command)"
   else
     printf '%s\n' "NO_PENDING_MESSAGE"
   fi
@@ -152,7 +188,19 @@ if [ "$PENDING_ONLY" -eq 1 ]; then
 fi
 
 a2a_prompt_for_debug_if_interactive
-a2a_debug_log "$ROLE" "chat:start park_mode=$([ "$PARK_MODE" -eq 1 ] && echo yes || echo no) surface_join_notice=$([ "$SURFACE_JOIN_NOTICE" -eq 1 ] && echo yes || echo no) message_present=$([ -n "$MESSAGE" ] && echo yes || echo no)"
+a2a_debug_log "$ROLE" "chat:start park_mode=$([ "$PARK_MODE" -eq 1 ] && echo yes || echo no) surface_join_notice=$([ "$SURFACE_JOIN_NOTICE" -eq 1 ] && echo yes || echo no) stdin=$([ "$READ_STDIN" -eq 1 ] && echo yes || echo no) message_present=$([ -n "$MESSAGE" ] && echo yes || echo no)"
+
+FOREGROUND_KEEPALIVE=0
+FOREGROUND_LOOP_MAX_SECONDS="${A2A_LOOP_MAX_SECONDS:-}"
+FOREGROUND_WAIT_POLL_TIMEOUT="${A2A_WAIT_POLL_TIMEOUT:-}"
+FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS="${A2A_LOOP_CONTINUE_ON_MAX_SECONDS:-}"
+if a2a_foreground_keepalive_enabled; then
+  FOREGROUND_KEEPALIVE=1
+  FOREGROUND_LOOP_MAX_SECONDS="${FOREGROUND_LOOP_MAX_SECONDS:-${A2A_FOREGROUND_KEEPALIVE_SECONDS:-5}}"
+  FOREGROUND_WAIT_POLL_TIMEOUT="${FOREGROUND_WAIT_POLL_TIMEOUT:-${A2A_FOREGROUND_WAIT_POLL_TIMEOUT:-5}}"
+  FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS="${FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS:-true}"
+fi
+a2a_debug_log "$ROLE" "chat:foreground_keepalive enabled=$([ "$FOREGROUND_KEEPALIVE" -eq 1 ] && echo yes || echo no) loop_max_seconds=${FOREGROUND_LOOP_MAX_SECONDS:-unset} wait_poll_timeout=${FOREGROUND_WAIT_POLL_TIMEOUT:-unset} continue_on_max=${FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS:-unset}"
 
 default_wait_state_for_role() {
   local role="$1"
@@ -600,6 +648,38 @@ mark_foreground_wait_owner() {
   a2a_debug_log "$role" "chat:foreground_wait_owner pid=$$ message_present=$([ -n "$message" ] && echo yes || echo no)"
 }
 
+recover_active_foreground_wait_output() {
+  local role="$1"
+  local expected_message="${2-}"
+  local timeout="$ACTIVE_WAIT_RECOVERY_TIMEOUT"
+  local start now elapsed pending_path
+  case "$timeout" in
+    ''|*[!0-9]*)
+      timeout=90
+      ;;
+  esac
+  start="$(date +%s)"
+  while true; do
+    pending_path="$(a2a_pending_message_path_for_role "$role" 2>/dev/null || true)"
+    if [ -n "$pending_path" ] && [ -s "$pending_path" ]; then
+      cat "$pending_path"
+      return 0
+    fi
+    if ! foreground_wait_active_for_message "$role" "$expected_message"; then
+      return 1
+    fi
+    if [ "$timeout" -le 0 ]; then
+      return 1
+    fi
+    now="$(date +%s)"
+    elapsed="$((now - start))"
+    if [ "$elapsed" -ge "$timeout" ]; then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 clear_foreground_wait_owner() {
   local role="$1"
   local pid_path message_path pid
@@ -780,9 +860,22 @@ if [ "$ROLE" = "host" ]; then
         a2a_debug_log "$ROLE" "chat:resume_inflight same_message_detected"
         if foreground_wait_active_for_message "$ROLE" "$MESSAGE"; then
           a2a_debug_log "$ROLE" "chat:resume_inflight foreground_wait_active"
-          OUTPUT="$(printf '%s\n%s\n' "DELIVERED" "WAIT_ALREADY_PENDING")"
-          printf '%s\n' "$OUTPUT"
-          apply_output_artifact_state "$ROLE" "$OUTPUT"
+          ACTIVE_WAIT_OUTPUT="$(recover_active_foreground_wait_output "$ROLE" "$MESSAGE" || true)"
+          if [ -n "$ACTIVE_WAIT_OUTPUT" ]; then
+            OUTPUT="$ACTIVE_WAIT_OUTPUT"
+            printf '%s\n' "NOTICE: Previous host send was already delivered. Returning the reply from the existing foreground wait."
+            print_output_recoverably "$ROLE" "$OUTPUT" || exit $?
+            clear_pending_message_after_relay "$ROLE"
+            clear_inflight_message "$ROLE"
+            apply_output_artifact_state "$ROLE" "$OUTPUT"
+            if should_restart_passive_waiter "$OUTPUT"; then
+              start_passive_waiter "$ROLE" "waiting_for_local_task" "waiting_for_local_task"
+            fi
+          else
+            OUTPUT="$(printf '%s\n%s\n' "DELIVERED" "WAIT_ALREADY_PENDING")"
+            printf '%s\n' "$OUTPUT"
+            apply_output_artifact_state "$ROLE" "$OUTPUT"
+          fi
           A2A_CHAT_CLEAN_EXIT=1
           exit 0
         fi
@@ -884,28 +977,50 @@ fi
 if [ -n "$MESSAGE" ]; then
   recover_pending_join_notice_for_host_outbound || exit $?
   clear_pending_message_for_outbound "$ROLE"
+  a2a_human_status "Outbound message:"
+  printf '%s\n' "$MESSAGE" >&2
 fi
 
 if [ "$PARK_MODE" -eq 1 ]; then
+  a2a_human_status "Parking the session for later recovery..."
   park_session
 fi
 
 if [ "$SURFACE_JOIN_NOTICE" -eq 1 ]; then
   mark_foreground_wait_owner "$ROLE" "$MESSAGE"
   if [ "$ROLE" = "host" ] && [ -z "$MESSAGE" ]; then
+    a2a_human_status "Waiting for partner to join..."
     HOST_JOIN_WAIT_MAX_SECONDS="${A2A_LOOP_MAX_SECONDS:-${A2A_HOST_JOIN_WAIT_MAX_SECONDS:-8}}"
     HOST_JOIN_WAIT_POLL_TIMEOUT="${A2A_WAIT_POLL_TIMEOUT:-${A2A_HOST_JOIN_WAIT_POLL_TIMEOUT:-5}}"
     HOST_JOIN_NOTIFY_TTY="$(a2a_capture_notification_tty 2>/dev/null || true)"
     a2a_debug_log "$ROLE" "chat:loop_invoke surface_join_notice=yes host_join_wait=yes loop_max_seconds=$HOST_JOIN_WAIT_MAX_SECONDS wait_poll_timeout=$HOST_JOIN_WAIT_POLL_TIMEOUT notify_tty=$(a2a_debug_shell_quote "${HOST_JOIN_NOTIFY_TTY:-none}")"
     OUTPUT="$(A2A_RELAY_NOTIFY_TTY="$HOST_JOIN_NOTIFY_TTY" A2A_LOOP_CONTINUE_ON_MAX_SECONDS="${A2A_LOOP_CONTINUE_ON_MAX_SECONDS:-true}" A2A_LOOP_MAX_SECONDS="$HOST_JOIN_WAIT_MAX_SECONDS" A2A_WAIT_POLL_TIMEOUT="$HOST_JOIN_WAIT_POLL_TIMEOUT" A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" --surface-join-notice "$ROLE" "$MESSAGE")"
   else
+    if [ -n "$MESSAGE" ]; then
+      a2a_human_status "Sending message to partner and waiting for reply..."
+    else
+      a2a_human_status "Waiting for partner reply..."
+    fi
     a2a_debug_log "$ROLE" "chat:loop_invoke surface_join_notice=yes host_join_wait=no"
-    OUTPUT="$(A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" --surface-join-notice "$ROLE" "$MESSAGE")"
+    if [ "$READ_STDIN" -eq 1 ]; then
+      OUTPUT="$(printf '%s' "$MESSAGE" | A2A_LOOP_CONTINUE_ON_MAX_SECONDS="$FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS" A2A_LOOP_MAX_SECONDS="$FOREGROUND_LOOP_MAX_SECONDS" A2A_WAIT_POLL_TIMEOUT="$FOREGROUND_WAIT_POLL_TIMEOUT" A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" --surface-join-notice "$ROLE" --stdin)"
+    else
+      OUTPUT="$(A2A_LOOP_CONTINUE_ON_MAX_SECONDS="$FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS" A2A_LOOP_MAX_SECONDS="$FOREGROUND_LOOP_MAX_SECONDS" A2A_WAIT_POLL_TIMEOUT="$FOREGROUND_WAIT_POLL_TIMEOUT" A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" --surface-join-notice "$ROLE" "$MESSAGE")"
+    fi
   fi
 else
+  if [ -n "$MESSAGE" ]; then
+    a2a_human_status "Sending message to partner and waiting for reply..."
+  else
+    a2a_human_status "Waiting for partner reply..."
+  fi
   a2a_debug_log "$ROLE" "chat:loop_invoke surface_join_notice=no"
   mark_foreground_wait_owner "$ROLE" "$MESSAGE"
-  OUTPUT="$(A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" "$ROLE" "$MESSAGE")"
+  if [ "$READ_STDIN" -eq 1 ]; then
+    OUTPUT="$(printf '%s' "$MESSAGE" | A2A_LOOP_CONTINUE_ON_MAX_SECONDS="$FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS" A2A_LOOP_MAX_SECONDS="$FOREGROUND_LOOP_MAX_SECONDS" A2A_WAIT_POLL_TIMEOUT="$FOREGROUND_WAIT_POLL_TIMEOUT" A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" "$ROLE" --stdin)"
+  else
+    OUTPUT="$(A2A_LOOP_CONTINUE_ON_MAX_SECONDS="$FOREGROUND_LOOP_CONTINUE_ON_MAX_SECONDS" A2A_LOOP_MAX_SECONDS="$FOREGROUND_LOOP_MAX_SECONDS" A2A_WAIT_POLL_TIMEOUT="$FOREGROUND_WAIT_POLL_TIMEOUT" A2A_LOOP_SURFACE_INACTIVITY="${A2A_LOOP_SURFACE_INACTIVITY:-false}" bash "$SCRIPT_DIR/a2a-loop.sh" "$ROLE" "$MESSAGE")"
+  fi
 fi
 STATUS=$?
 clear_foreground_wait_owner "$ROLE"
@@ -914,6 +1029,10 @@ a2a_debug_log "$ROLE" "chat:loop_complete status=$STATUS first_line=$(printf '%s
 if [ "$STATUS" -eq 0 ] && output_is_transport_failure "$OUTPUT"; then
   STATUS=1
   a2a_debug_log "$ROLE" "chat:loop_transport_failure first_line=$(printf '%s' "$OUTPUT" | head -n 1)"
+  if [ "$ROLE" = "host" ] && host_pre_join_wait_required; then
+    PRE_JOIN_TRANSPORT_FAILURE=1
+    a2a_update_artifact_state "$ROLE" "waiting_for_join" "transport_recovery_required" "null" "$OUTPUT" "Remote broker wait failed before the join notice was received. Reattach with: $(host_surface_join_recovery_command)"
+  fi
 fi
 
 if [ "$STATUS" -eq 0 ]; then
@@ -930,7 +1049,7 @@ else
   printf '%s\n' "$OUTPUT"
 fi
 
-if [ "$ROLE" = "host" ] && should_restart_passive_waiter "$OUTPUT"; then
+if [ "$ROLE" = "host" ] && [ "$PRE_JOIN_TRANSPORT_FAILURE" -ne 1 ] && should_restart_passive_waiter "$OUTPUT"; then
   start_passive_waiter "$ROLE" "waiting_for_local_task" "waiting_for_local_task"
 fi
 

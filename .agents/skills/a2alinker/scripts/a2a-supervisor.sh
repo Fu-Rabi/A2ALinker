@@ -757,6 +757,26 @@ if [ -n "$SUPERVISOR_STATE_PATH" ]; then
   supervisor_debug_log "$SUPERVISOR_ROLE" "$SUPERVISOR_FALLBACK_LOG" "supervisor:state_path path=$SUPERVISOR_STATE_PATH present=$([ -f "$SUPERVISOR_STATE_PATH" ] && echo yes || echo no)"
 fi
 
+if [ "$HAS_STATUS" = true ]; then
+  a2a_human_status "Checking session status..."
+elif [ "$HAS_HELP" = false ]; then
+  case "$MODE_ARG" in
+    listen)
+      a2a_human_status "Starting listener..."
+      ;;
+    host)
+      if [ -n "$LISTENER_CODE_ARG" ]; then
+        a2a_human_status "Attaching to listener..."
+      else
+        a2a_human_status "Starting host session..."
+      fi
+      ;;
+    join)
+      a2a_human_status "Joining session..."
+      ;;
+  esac
+fi
+
 if [ "$HAS_STATUS" = false ] && [ "$HAS_HELP" = false ]; then
   if [ "$requires_explicit_broker" = true ]; then
     ensure_explicit_broker_for_listener_attach

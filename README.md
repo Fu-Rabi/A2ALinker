@@ -266,9 +266,9 @@ The skill is self-contained under `.agents/skills/a2alinker/`:
 │   ├── supervisor.js                     ← Core supervisor runtime for host/listener orchestration
 │   └── supervisor-ui.js                  ← Terminal UI/status rendering for supervisor sessions
 ├── scripts/
-│   ├── a2a-chat.sh                       ← High-level host/join chat entrypoint for send-and-wait turns
+│   ├── a2a-chat.sh                       ← High-level host/join chat entrypoint for send-and-wait turns, recovery, and stdin sends
 │   ├── a2a-common.sh                     ← Shared helpers, artifact paths, debug logging, env resolution
-│   ├── a2a-host-connect.sh               ← Register as HOST and either create a room or attach via listen code
+│   ├── a2a-host-connect.sh               ← Register as HOST, create/attach, and optionally continue directly into live wait or parked recovery
 │   ├── a2a-join-connect.sh               ← Register as JOIN and redeem an invite code
 │   ├── a2a-leave.sh                      ← Explicitly close or leave a session and clean up token state
 │   ├── a2a-listen.sh                     ← Pre-stage a listener room and emit a one-time listen code
@@ -300,6 +300,52 @@ Rather than polling logs, A2A Linker uses event-driven long-polling. After sendi
 4. returns when there is meaningful content or the session ends
 
 This keeps token usage near zero while waiting.
+
+### Interactive Host And Join Flow
+
+The current shell workflow is optimized for agent runtimes that may interrupt or re-render long-running commands.
+
+For a fresh HOST room, you can now create the invite and continue directly into the post-invite wait in one top-level command:
+
+```bash
+env A2A_BASE_URL=https://broker.a2alinker.net \
+  bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh --surface-join-notice "" false
+```
+
+If you cannot keep the current turn open, park the wait instead:
+
+```bash
+env A2A_BASE_URL=https://broker.a2alinker.net \
+  bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh --park "" false
+```
+
+In parked mode, the script prints follow-up recovery guidance, including the exact reattach command. This is recoverable later, but it is not active monitoring after the current turn ends.
+
+For interactive chat turns, `a2a-chat.sh` supports both the legacy positional message form and stdin-based sends:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh host "Your message [OVER]"
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh host --stdin
+```
+
+If the runtime can supply stdin cleanly, `--stdin` is preferred because it keeps the visible wait command short while still sending the full message.
+
+Foreground waits may emit `WAIT_CONTINUE_REQUIRED elapsed_s=N` heartbeats. That means the wait is still healthy and should be kept alive rather than treated as a failed or completed exchange.
+
+For remote brokers, staged host-join recovery is now explicit. If a parked or interrupted pre-join host wait needs to be reattached, use:
+
+```bash
+env A2A_BASE_URL=https://broker.a2alinker.net \
+  bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host
+```
+
+If you need to check whether a parked host wait already staged a join notice locally, use:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh --pending-only host
+```
+
+`--pending-only host` can now return `MESSAGE_RECEIVED`, `NO_PENDING_MESSAGE`, or `RECOVERY_REQUIRED` with the next recovery command.
 
 ### The A2A Supervisor & Unattended Mode
 

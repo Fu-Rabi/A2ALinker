@@ -19,11 +19,12 @@ fi
 case "$INVITE" in
   listen_*)
     echo "ERROR: Listener codes must be redeemed by HOST, not JOIN."
-    echo "Use: bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh $INVITE"
-    echo "For remote brokers, prefer: A2A_BASE_URL=https://<broker> bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh $INVITE"
+    echo "NEXT_STEP: Ask the host-side agent to attach using this listener code."
     exit 1
     ;;
 esac
+
+a2a_human_status "Joining session..."
 
 print_connect_error() {
   local curl_exit="$1"

@@ -150,6 +150,15 @@ store_host_token() {
   fi
 }
 
+host_chat_recovery_command() {
+  local chat_args="$1"
+  if a2a_is_remote_base_url "$BASE_URL"; then
+    printf 'env A2A_BASE_URL=%s bash .agents/skills/a2alinker/scripts/a2a-chat.sh %s\n' "$BASE_URL" "$chat_args"
+  else
+    printf 'bash .agents/skills/a2alinker/scripts/a2a-chat.sh %s\n' "$chat_args"
+  fi
+}
+
 run_post_connect_mode() {
   local mode_label rc
   case "$POST_CONNECT_MODE" in
@@ -168,6 +177,7 @@ run_post_connect_mode() {
       echo "FOLLOW_UP_MODE: park"
       echo 'FOLLOW_UP_DETAIL: Parking host join wait for explicit later recovery; this is not active chat monitoring after the current turn ends.'
       echo 'FOLLOW_UP_RECOVERY: When the other side has joined, ask to recover the host session so the join can be confirmed.'
+      echo "FOLLOW_UP_RECOVERY_COMMAND: $(host_chat_recovery_command '--surface-join-notice host')"
       a2a_debug_log "host" "host_connect:post_connect_invoke mode=$mode_label"
       bash "$SCRIPT_DIR/a2a-chat.sh" --park host
       rc=$?
@@ -273,6 +283,7 @@ if [ -n "$LISTEN_CODE" ]; then
     echo "ERROR: --surface-join-notice and --park are only valid for fresh host room creation, not listener attach."
     exit 1
   fi
+  a2a_human_status "Attaching to listener..."
   a2a_debug_log "host" "host_connect:start mode=listener_attach listen_code=$LISTEN_CODE base_url=$BASE_URL"
   # Listener flow: join the pre-staged room, become HOST
   # Now 1 round-trip: register + join in one call
@@ -325,8 +336,9 @@ if [ -n "$LISTEN_CODE" ]; then
   echo "STATUS: $STATUS"
   echo "ROLE: host"
   echo "HEADLESS: $HEADLESS"
-  echo 'NEXT_STEP: HOST sends the first message. Use: bash .agents/skills/a2alinker/scripts/a2a-loop.sh host "your message [OVER]"'
+  echo 'NEXT_STEP: HOST sends the first message.'
 else
+  a2a_human_status "Creating invite..."
   a2a_debug_log "host" "host_connect:start mode=standard base_url=$BASE_URL"
   # Standard flow: register + create room in 1 round-trip
   HEADLESS_ARG="${2:-false}"
@@ -375,8 +387,9 @@ else
   echo "ROLE: host"
   echo "INVITE_CODE: $INVITE"
   echo "HEADLESS_SET: $HEADLESS_ARG"
-  echo 'NEXT_STEP: Share INVITE_CODE with the joiner. For live same-turn monitoring use: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host'
-  echo 'NEXT_STEP: If you cannot keep the turn open, park the host session for explicit later recovery with: bash .agents/skills/a2alinker/scripts/a2a-chat.sh --park host'
+  echo 'NEXT_STEP: Share INVITE_CODE with the joiner. Keep waiting if you want the join notice surfaced in this chat.'
+  echo 'NEXT_STEP: If you cannot keep waiting here, park the host session and recover it after the joiner connects.'
+  echo "NEXT_STEP: Remote-safe recovery command: $(host_chat_recovery_command '--surface-join-notice host')"
   echo 'NEXT_STEP: If parked, tell the human: When the other side has joined, ask me to recover the host session and I will confirm whether it joined.'
   if [ -n "$POST_CONNECT_MODE" ]; then
     run_post_connect_mode

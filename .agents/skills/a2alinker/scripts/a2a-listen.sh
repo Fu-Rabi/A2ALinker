@@ -18,6 +18,7 @@ fi
 a2a_cleanup_stale_join_token "$STALE_BASE_URL"
 
 HEADLESS="${1:-false}"
+a2a_human_status "Starting listener..."
 a2a_debug_log "join" "listen:start headless=$HEADLESS base_url=$BASE_URL"
 
 # One-shot setup: register + create room in 1 round-trip
@@ -56,5 +57,5 @@ a2a_debug_log "join" "listen:setup_complete listener_code=$LISTEN_CODE"
 echo "ROLE: join"
 echo "LISTENER_CODE: $LISTEN_CODE"
 echo "HEADLESS_SET: $HEADLESS"
-echo 'NEXT_STEP: Keep the supervisor running, or run bash .agents/skills/a2alinker/scripts/a2a-loop.sh join to stay attached and receive close notifications.'
+echo 'NEXT_STEP: Keep the listener running so the host can connect. To observe later session events, stay attached to the listener.'
 exit 0

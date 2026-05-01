@@ -291,6 +291,53 @@ echo "TIMEOUT_WAIT_EXPIRED"
         }
     });
 
+    it('emits continue heartbeats to stderr while keeping the wait alive', () => {
+        const { root, scriptDir } = setupTempLoopScripts();
+        const statePath = path.join(root, 'wait-count');
+
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+COUNT=0
+if [ -f "${statePath}" ]; then
+  COUNT="$(cat "${statePath}")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${statePath}"
+if [ "$COUNT" -lt 2 ]; then
+  echo "TIMEOUT_WAIT_EXPIRED"
+else
+  cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Reply after heartbeat
+└────
+EOF
+fi
+`);
+
+        try {
+            const result = withJoinToken('tok_test_join', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'join'],
+                {
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        A2A_LOOP_MAX_SECONDS: '0',
+                        A2A_LOOP_CONTINUE_ON_MAX_SECONDS: 'true',
+                    },
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stderr).toMatch(/WAIT_CONTINUE_REQUIRED elapsed_s=\d+/);
+            expect(result.stdout).toContain('Reply after heartbeat');
+            expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('2');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('surfaces five-minute inactivity by default for supervisor callers', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-inactivity-default-'));
         const scriptDir = path.join(root, 'scripts');
