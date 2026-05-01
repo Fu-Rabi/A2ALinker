@@ -6,6 +6,7 @@ import {
     normalizeSupervisorReply,
     parseLoopEvent,
     readHostSessionArtifact,
+    readJoinSessionArtifact,
     readListenerSessionArtifact,
     runSupervisor,
 } from '../src/supervisor';
@@ -161,6 +162,34 @@ describe('runSupervisor', () => {
         expect(artifact.lastEvent).toBe('room_closed');
     });
 
+    it('preserves a staged host join notice as pending relay state', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-join-notice-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-host-session.json'), JSON.stringify({
+            mode: 'host',
+            status: 'connected',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+            attachedListenerCode: null,
+            inviteCode: 'invite_demo123',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_host_pending_message.txt'), `MESSAGE_RECEIVED
+[SYSTEM]: Partner 'Agent-join' has joined. Session is live!
+`, 'utf8');
+
+        const artifact = readHostSessionArtifact(root);
+
+        expect(artifact.status).toBe('join_notice_pending');
+        expect(artifact.lastEvent).toBe('system_joined');
+        expect(artifact.notice).toBe('Partner joined. Relay this system notification to the human and ask for the first host message.');
+    });
+
     it('upgrades stale host status to mailbox error when the pending event is stronger than liveness', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-host-status-stale-mailbox-'));
         const sessionDir = path.join(root, 'session');
@@ -185,6 +214,83 @@ describe('runSupervisor', () => {
         expect(artifact.status).toBe('error');
         expect(artifact.lastEvent).toBe('WAIT_ALREADY_PENDING');
         expect(artifact.error).toContain('WAIT_ALREADY_PENDING');
+    });
+
+    it('marks join status as stale local state when the recorded pid is no longer running', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-status-'));
+        const artifactPath = path.join(root, '.a2a-join-session.json');
+        fs.writeFileSync(artifactPath, JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_host_message',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir: path.join(root, 'session'),
+            pid: 999999,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+
+        const artifact = readJoinSessionArtifact(root);
+
+        expect(artifact.status).toBe('stale_local_state');
+        expect(artifact.error).toContain('Supervisor process is no longer running');
+    });
+
+    it('upgrades join status to waiting_for_local_task when a pending message is already stored', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-status-mailbox-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_host_message',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), 'MESSAGE_RECEIVED\n┌─ Agent-host [OVER]\n│\n│ hello\n└────\n', 'utf8');
+
+        const artifact = readJoinSessionArtifact(root);
+
+        expect(artifact.status).toBe('waiting_for_local_task');
+        expect(artifact.lastEvent).toBe('waiting_for_local_task');
+        expect(artifact.notice).toContain('Run a2a-chat.sh join');
+    });
+
+    it('does not mark join status closed when a pending partner message only quotes a disconnect phrase', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-join-status-quoted-close-'));
+        const sessionDir = path.join(root, 'session');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(root, '.a2a-join-session.json'), JSON.stringify({
+            mode: 'join',
+            status: 'waiting_for_host_message',
+            inviteCode: 'invite_demo123',
+            brokerEndpoint: 'https://broker.a2alinker.net',
+            headless: true,
+            sessionDir,
+            pid: process.pid,
+            startedAt: '2026-04-11T00:00:00.000Z',
+            updatedAt: '2026-04-11T00:00:00.000Z',
+            source: 'local_cache',
+        }, null, 2), 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'a2a_join_pending_message.txt'), `MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ The UI says "You are disconnected." but keep waiting.
+└────
+`, 'utf8');
+
+        const artifact = readJoinSessionArtifact(root);
+
+        expect(artifact.status).toBe('waiting_for_local_task');
+        expect(artifact.lastEvent).toBe('waiting_for_local_task');
+        expect(artifact.notice).toContain('Run a2a-chat.sh join');
     });
 
     it('treats a host token-missing mailbox error as closed when the local listener artifact is already closed', () => {
@@ -285,10 +391,15 @@ process.stdout.write('I found the failing assertion and fixed it. [STANDBY]\\n')
 
         const sentLog = fs.readFileSync(sentLogPath, 'utf8');
         const metadata = JSON.parse(fs.readFileSync(session.metadataPath, 'utf8')) as Record<string, string>;
+        const artifact = JSON.parse(fs.readFileSync(path.join(root, '.a2a-join-session.json'), 'utf8')) as Record<string, string | boolean | null>;
 
         expect(sentLog).toContain('I found the failing assertion and fixed it. [STANDBY]');
         expect(metadata.agentLabel).toBe('custom-bot');
         expect(metadata.status).toBe('closed');
+        expect(metadata.joinStatePath).toBe(path.join(root, '.a2a-join-session.json'));
+        expect(artifact.mode).toBe('join');
+        expect(artifact.inviteCode).toBe('invite_join123');
+        expect(artifact.status).toBe('closed');
     });
 
     it('records a session grant after local approval and persists it in the policy file', async () => {
@@ -790,6 +901,88 @@ exit 0
         expect(artifact.status).toBe('closed');
         expect(infoLogs.some((entry) => entry.includes('LISTENER_CODE: listen_demo123'))).toBe(true);
         expect(infoLogs.some((entry) => entry.includes(`STATE_FILE: ${artifactPath}`))).toBe(true);
+    });
+
+    it('ignores SIGHUP for a headless listener instead of closing the broker session', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const closePath = path.join(root, 'close-loop');
+        const loopStartedPath = path.join(root, 'loop-started');
+        const leaveLogPath = path.join(root, 'leave.log');
+        const artifactPath = path.join(root, '.a2a-listener-session.json');
+        let supervisorPromise: ReturnType<typeof runSupervisor> | null = null;
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+touch "${loopStartedPath}"
+while [ ! -f "${closePath}" ]; do
+  sleep 0.05
+done
+cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: HOST has closed the session. You are disconnected.
+EOF
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+printf '%s\\n' "$1" >> "${leaveLogPath}"
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('unused [OVER]\\n');`);
+
+        const exitSpy = jest.spyOn(process, 'exit').mockImplementation(((code?: string | number | null | undefined) => {
+            throw new Error(`process.exit called with ${code}`);
+        }) as never);
+
+        try {
+            supervisorPromise = runSupervisor({
+                mode: 'listen',
+                agentLabel: 'codex-like',
+                runnerCommand: `node "${runnerPath}"`,
+                headless: true,
+                scriptDir,
+                sessionRoot,
+                cwd: root,
+                logger: { info: () => undefined, error: () => undefined },
+            });
+
+            await waitFor(() => {
+                if (!fs.existsSync(loopStartedPath) || !fs.existsSync(artifactPath)) {
+                    return false;
+                }
+                const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Record<string, string>;
+                return artifact.status === 'waiting_for_host';
+            });
+
+            expect(() => process.emit('SIGHUP', 'SIGHUP')).not.toThrow();
+
+            const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Record<string, string>;
+            const metadataPath = path.join(artifact.sessionDir, 'session.json');
+            await waitFor(() => {
+                const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as Record<string, string>;
+                return metadata.lastIgnoredSignal === 'SIGHUP';
+            });
+
+            fs.writeFileSync(closePath, '1', 'utf8');
+            const session = await supervisorPromise;
+            const metadata = JSON.parse(fs.readFileSync(session.metadataPath, 'utf8')) as Record<string, string>;
+            const artifactAfterClose = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Record<string, string>;
+            const leaveLog = fs.readFileSync(leaveLogPath, 'utf8');
+
+            expect(metadata.status).toBe('closed');
+            expect(metadata.lastIgnoredSignal).toBe('SIGHUP');
+            expect(artifactAfterClose.status).toBe('closed');
+            expect(leaveLog).not.toContain('listen');
+            expect(exitSpy).not.toHaveBeenCalled();
+        } finally {
+            fs.writeFileSync(closePath, '1', 'utf8');
+            if (supervisorPromise) {
+                await supervisorPromise.catch(() => undefined);
+            }
+            exitSpy.mockRestore();
+        }
     });
 
     it('emits a plain listener startup error line when listener setup fails', async () => {

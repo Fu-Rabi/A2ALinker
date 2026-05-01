@@ -7,23 +7,83 @@
 #                5+ min TIMEOUT_ROOM_ALIVE, TIMEOUT_ROOM_CLOSED,
 #                or TIMEOUT_PING_FAILED (after retries).
 #
-# Usage (wait only):   bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join]
-# Usage (send + wait): bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] "message [OVER]"
-# Usage (stdin):       bash .agents/skills/a2alinker/scripts/a2a-loop.sh [host|join] --stdin < message.txt
+# Usage (wait only):   bash .agents/skills/a2alinker/scripts/a2a-loop.sh [--surface-join-notice] [host|join]
+# Usage (send + wait): bash .agents/skills/a2alinker/scripts/a2a-loop.sh [--surface-join-notice] [host|join] "message [OVER]"
+# Usage (stdin):       bash .agents/skills/a2alinker/scripts/a2a-loop.sh [--surface-join-notice] [host|join] --stdin < message.txt
 
-ROLE="${1:-join}"
-MESSAGE="${2:-}"
+ROLE="join"
+MESSAGE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
-TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+ORIGINAL_ARGS=("$@")
 MAX_PING_FAILS=3
 PING_FAIL_COUNT=0
 MAX_WAIT_CONFLICTS="${A2A_MAX_WAIT_CONFLICTS:-3}"
 WAIT_CONFLICT_COUNT=0
+SURFACE_JOIN_NOTICE=false
+SURFACE_INACTIVITY=true
 READ_STDIN=false
-INFLIGHT_PATH="$(a2a_inflight_message_path_for_role "$ROLE" 2>/dev/null || true)"
+TOKEN_FILE=""
+INFLIGHT_PATH=""
+LOOP_MAX_SECONDS="${A2A_LOOP_MAX_SECONDS:-}"
+LOOP_STARTED_AT="$(date +%s)"
+LOOP_CONTINUE_ON_MAX_SECONDS=false
 ARTIFACT_STANDBY_BYTES_THRESHOLD="${A2A_ARTIFACT_STANDBY_BYTES_THRESHOLD:-2048}"
 ARTIFACT_STANDBY_LONG_LINES_THRESHOLD="${A2A_ARTIFACT_STANDBY_LONG_LINES_THRESHOLD:-10}"
+
+case "$(printf '%s' "${A2A_SURFACE_JOIN_NOTICE:-false}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)
+    SURFACE_JOIN_NOTICE=true
+    ;;
+esac
+
+case "$(printf '%s' "${A2A_LOOP_SURFACE_INACTIVITY:-true}" | tr '[:upper:]' '[:lower:]')" in
+  0|false|no|off)
+    SURFACE_INACTIVITY=false
+    ;;
+esac
+
+case "$(printf '%s' "${A2A_LOOP_CONTINUE_ON_MAX_SECONDS:-false}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)
+    LOOP_CONTINUE_ON_MAX_SECONDS=true
+    ;;
+esac
+
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --surface-join-notice)
+      SURFACE_JOIN_NOTICE=true
+      shift
+      ;;
+    host|join)
+      ROLE="$1"
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+MESSAGE="${1:-}"
+TOKEN_FILE="/tmp/a2a_${ROLE}_token"
+INFLIGHT_PATH="$(a2a_inflight_message_path_for_role "$ROLE" 2>/dev/null || true)"
+
+a2a_debug_script_lifecycle_start "$ROLE" "a2a-loop.sh" "${ORIGINAL_ARGS[@]}"
+trap 'a2a_debug_script_lifecycle_end "$ROLE" "a2a-loop.sh" "$?"' EXIT
+loop_signal_exit() {
+  local signal_name="$1"
+  local exit_code="$2"
+  a2a_debug_signal_exit "$ROLE" "a2a-loop.sh" "$signal_name" "$exit_code"
+  exit "$exit_code"
+}
+trap 'loop_signal_exit HUP 129' HUP
+trap 'loop_signal_exit INT 130' INT
+trap 'loop_signal_exit QUIT 131' QUIT
+trap 'loop_signal_exit PIPE 141' PIPE
+trap 'loop_signal_exit TERM 143' TERM
+a2a_debug_log "$ROLE" "loop:start surface_join_notice=$SURFACE_JOIN_NOTICE surface_inactivity=$SURFACE_INACTIVITY continue_on_max_seconds=$LOOP_CONTINUE_ON_MAX_SECONDS loop_max_seconds=${LOOP_MAX_SECONDS:-unset} message_present=$([ -n "$MESSAGE" ] && echo yes || echo no)"
 
 normalize_loop_message() {
   local payload="$1"
@@ -50,6 +110,38 @@ loop_message_signal() {
 loop_message_body() {
   local payload="$1"
   printf '%s' "$payload" | perl -0pe 's/\s*\[(?:OVER|STANDBY)\]\s*$//s'
+}
+
+loop_elapsed_seconds() {
+  local now
+  now="$(date +%s)"
+  printf '%s\n' "$((now - LOOP_STARTED_AT))"
+}
+
+loop_continue_or_timeout() {
+  local elapsed now
+  if [ -z "$LOOP_MAX_SECONDS" ]; then
+    return 0
+  fi
+  case "$LOOP_MAX_SECONDS" in
+    ''|*[!0-9]*)
+      return 0
+      ;;
+  esac
+  now="$(date +%s)"
+  elapsed="$((now - LOOP_STARTED_AT))"
+  if [ "$elapsed" -ge "$LOOP_MAX_SECONDS" ]; then
+    a2a_debug_log "$ROLE" "loop:max_seconds elapsed_s=$elapsed max_s=$LOOP_MAX_SECONDS"
+    a2a_debug_runtime_checkpoint "$ROLE" "loop:max_seconds_context" "elapsed_s=$elapsed" "max_s=$LOOP_MAX_SECONDS"
+    if [ "$LOOP_CONTINUE_ON_MAX_SECONDS" = true ]; then
+      printf 'WAIT_CONTINUE_REQUIRED elapsed_s=%s\n' "$elapsed" >&2
+      LOOP_STARTED_AT="$now"
+      return 0
+    fi
+    printf 'WAIT_CONTINUE_REQUIRED elapsed_s=%s\n' "$elapsed"
+    exit 0
+  fi
+  return 0
 }
 
 loop_payload_is_artifact_like() {
@@ -223,7 +315,10 @@ fi
 # Wait loop — retry on noise and transient failures, surface only real events
 while true; do
   RESULT=$(bash "$SCRIPT_DIR/a2a-wait-message.sh" "$ROLE")
+  WAIT_STATUS=$?
+  a2a_debug_log "$ROLE" "loop:wait_command_exit status=$WAIT_STATUS"
   a2a_debug_log "$ROLE" "loop:wait_result first_line=$(printf '%s' "$RESULT" | head -n 1)"
+  a2a_debug_runtime_checkpoint "$ROLE" "loop:wait_result_context" "first_line=$(printf '%s' "$RESULT" | head -n 1)"
 
   if echo "$RESULT" | grep -q '^MESSAGE_RECEIVED'; then
     WAIT_CONFLICT_COUNT=0
@@ -232,6 +327,12 @@ while true; do
 
       # Don't exit on routine 'joined' or 'live' messages. Keep waiting.
       if echo "$RESULT" | grep -i -q -E '(has joined|session is live)'; then
+        if [ "$SURFACE_JOIN_NOTICE" = true ]; then
+          a2a_notify_host_join_terminal "$ROLE" "$RESULT" || true
+          a2a_notify_host_join_human "$ROLE" "$RESULT" || true
+          echo "$RESULT"
+          exit 0
+        fi
         # The broker may have bundled a real partner message in the same payload
         # after the SYSTEM block. If so, extract and surface it now — we cannot
         # call a2a-wait-message.sh again because the broker already delivered it.
@@ -243,6 +344,7 @@ while true; do
           echo "$SECOND_MSG"
           exit 0
         fi
+        loop_continue_or_timeout
         continue
       fi
 
@@ -256,10 +358,11 @@ while true; do
     PING_FAIL_COUNT=0  # Server responded — reset failure counter
     WAIT_CONFLICT_COUNT=0
     LAST_SEEN=$(echo "$RESULT" | grep -o 'last_seen_ms=[0-9]*' | grep -o '[0-9]*$')
-    if [ "${LAST_SEEN:-0}" -ge 300000 ]; then
+    if [ "$SURFACE_INACTIVITY" = true ] && [ "${LAST_SEEN:-0}" -ge 300000 ]; then
       echo "$RESULT"  # 5+ min — surface to model
       exit 0
     fi
+    loop_continue_or_timeout
     continue  # Sub-5-min — loop silently
   elif echo "$RESULT" | grep -q '^TIMEOUT_ROOM_CLOSED'; then
     WAIT_CONFLICT_COUNT=0
@@ -268,11 +371,13 @@ while true; do
   elif echo "$RESULT" | grep -q '^TIMEOUT_WAIT_EXPIRED'; then
     PING_FAIL_COUNT=0
     WAIT_CONFLICT_COUNT=0
+    loop_continue_or_timeout
     continue
   elif echo "$RESULT" | grep -q '^WAIT_ALREADY_PENDING'; then
     WAIT_CONFLICT_COUNT=$((WAIT_CONFLICT_COUNT + 1))
     a2a_debug_log "$ROLE" "loop:wait_conflict count=$WAIT_CONFLICT_COUNT max=$MAX_WAIT_CONFLICTS"
     if [ "$WAIT_CONFLICT_COUNT" -lt "$MAX_WAIT_CONFLICTS" ]; then
+      loop_continue_or_timeout
       sleep 2
       continue
     fi
@@ -291,6 +396,7 @@ while true; do
     PING_FAIL_COUNT=$((PING_FAIL_COUNT + 1))
     WAIT_CONFLICT_COUNT=0
     if [ "$PING_FAIL_COUNT" -le "$MAX_PING_FAILS" ]; then
+      loop_continue_or_timeout
       sleep 15
       continue
     fi

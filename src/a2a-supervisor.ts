@@ -1,8 +1,10 @@
 import {
   bootstrapHostAttachSession,
   getHostSessionArtifactPath,
+  getJoinSessionArtifactPath,
   getListenerSessionArtifactPath,
   readHostSessionArtifact,
+  readJoinSessionArtifact,
   readListenerSessionArtifact,
   runSupervisor,
   SupervisorMode,
@@ -38,6 +40,7 @@ function renderUsage(): string {
     '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --agent-label codex',
     '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode listen --status',
     '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode host --status',
+    '  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh --mode join --status',
     '  A2A_BASE_URL=https://broker.example bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh listen_xxx',
   ].join('\n');
 }
@@ -163,7 +166,15 @@ async function main(): Promise<void> {
       }, null, 2));
       return;
     }
-    throw new Error('Usage: --status is only supported with --mode listen or --mode host.');
+    if (parsed.mode === 'join') {
+      const artifact = readJoinSessionArtifact(process.cwd());
+      console.log(JSON.stringify({
+        ...artifact,
+        artifactPath: getJoinSessionArtifactPath(process.cwd()),
+      }, null, 2));
+      return;
+    }
+    throw new Error('Usage: --status is only supported with --mode listen, --mode host, or --mode join.');
   }
   const session = await runSupervisor(parsed as Parameters<typeof runSupervisor>[0]);
   console.log(`SESSION_DIR: ${session.sessionDir}`);

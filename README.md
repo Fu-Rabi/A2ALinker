@@ -266,9 +266,9 @@ The skill is self-contained under `.agents/skills/a2alinker/`:
 │   ├── supervisor.js                     ← Core supervisor runtime for host/listener orchestration
 │   └── supervisor-ui.js                  ← Terminal UI/status rendering for supervisor sessions
 ├── scripts/
-│   ├── a2a-chat.sh                       ← High-level host/join chat entrypoint for send-and-wait turns
+│   ├── a2a-chat.sh                       ← High-level host/join chat entrypoint for send-and-wait turns, recovery, and stdin sends
 │   ├── a2a-common.sh                     ← Shared helpers, artifact paths, debug logging, env resolution
-│   ├── a2a-host-connect.sh               ← Register as HOST and either create a room or attach via listen code
+│   ├── a2a-host-connect.sh               ← Register as HOST, create/attach, and optionally continue directly into live wait or parked recovery
 │   ├── a2a-join-connect.sh               ← Register as JOIN and redeem an invite code
 │   ├── a2a-leave.sh                      ← Explicitly close or leave a session and clean up token state
 │   ├── a2a-listen.sh                     ← Pre-stage a listener room and emit a one-time listen code
@@ -301,16 +301,67 @@ Rather than polling logs, A2A Linker uses event-driven long-polling. After sendi
 
 This keeps token usage near zero while waiting.
 
+### Interactive Host And Join Flow
+
+The current shell workflow is optimized for agent runtimes that may interrupt or re-render long-running commands.
+
+For a fresh HOST room, you can now create the invite and continue directly into the post-invite wait in one top-level command:
+
+```bash
+env A2A_BASE_URL=https://broker.a2alinker.net \
+  bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh --surface-join-notice "" false
+```
+
+If you cannot keep the current turn open, park the wait instead:
+
+```bash
+env A2A_BASE_URL=https://broker.a2alinker.net \
+  bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh --park "" false
+```
+
+In parked mode, the script prints follow-up recovery guidance, including the exact reattach command. This is recoverable later, but it is not active monitoring after the current turn ends.
+
+For interactive chat turns, `a2a-chat.sh` supports both the legacy positional message form and stdin-based sends:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh host "Your message [OVER]"
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh host --stdin
+```
+
+If the runtime can supply stdin cleanly, `--stdin` is preferred because it keeps the visible wait command short while still sending the full message.
+
+Foreground waits may emit `WAIT_CONTINUE_REQUIRED elapsed_s=N` heartbeats. That means the wait is still healthy and should be kept alive rather than treated as a failed or completed exchange.
+
+For remote brokers, staged host-join recovery is now explicit. If a parked or interrupted pre-join host wait needs to be reattached, use:
+
+```bash
+env A2A_BASE_URL=https://broker.a2alinker.net \
+  bash .agents/skills/a2alinker/scripts/a2a-chat.sh --surface-join-notice host
+```
+
+If you need to check whether a parked host wait already staged a join notice locally, use:
+
+```bash
+bash .agents/skills/a2alinker/scripts/a2a-chat.sh --pending-only host
+```
+
+`--pending-only host` can now return `MESSAGE_RECEIVED`, `NO_PENDING_MESSAGE`, or `RECOVERY_REQUIRED` with the next recovery command.
+
 ### The A2A Supervisor & Unattended Mode
 
 For runtimes that do not self-wake after tool results, or when you want a completely unattended local agent, A2A Linker includes a session-scoped supervisor. The recommended entrypoint is:
 
 ```bash
 npm run build
-bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
+env \
+  A2A_BASE_URL= **CHOOSE_IF_REMOTE_OR_LOCAL** \
+  A2A_UNATTENDED=true \
+  A2A_RUNNER_KIND= **CHOOSE_THE_RUNNER** \
+  A2A_ALLOW_WEB_ACCESS=true \
+  A2A_ALLOW_TESTS_BUILDS=true \
+  bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label Codi \
-  --runner-kind codex
+  --agent-label **CHOOSE_AGENT_NAME**
 ```
 
 For fresh unattended listener launches, the current contract is explicit:
@@ -332,21 +383,18 @@ bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --agent-label Codi
 ```
 
-The detached startup log now emits resolved startup state first, then performs a short stability check before releasing the listener code. When launching in the background, inspect the outer log first:
+The listener terminal emits resolved startup state first, then prints the listener code and stays attached. Run this in a long-running/background terminal and keep it alive:
 
 ```bash
-nohup env \
-  A2A_BASE_URL=https://broker.a2alinker.net \
+env \
+  A2A_BASE_URL=**CHOOSE_IF_REMOTE_OR_LOCAL**  \
   A2A_UNATTENDED=true \
-  A2A_RUNNER_KIND=codex \
+  A2A_RUNNER_KIND=**CHOOSE_THE_RUNNER** \
   A2A_ALLOW_WEB_ACCESS=true \
   A2A_ALLOW_TESTS_BUILDS=true \
   bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh \
   --mode listen \
-  --agent-label Codi \
-  > /tmp/a2a_listener_out.log 2>&1 &
-
-sed -n '1,200p' /tmp/a2a_listener_out.log
+  --agent-label **CHOOSE_AGENT_NAME**
 ```
 
 You should see lines like:
@@ -359,18 +407,17 @@ RUNNER=codex
 WEB_ACCESS=true
 TESTS_BUILDS=true
 DEBUG=true
-Verifying listener stability...
 LISTENER_CODE: listen_xxx
 STATE_FILE: /path/to/.a2a-listener-session.json
 ```
 
-If startup is unstable, the wrapper retries automatically up to 3 attempts with a fresh listener code each time. Failed attempts do not release a code. After 3 failed attempts, the outer log ends with:
+The legacy detached startup verifier remains available only when explicitly requested with `A2A_DETACH_LISTENER=true`. In that mode, failed attempts do not release a code. After 3 failed attempts, the outer log ends with:
 
 ```text
 Listener startup was unstable across 3 attempts, so no code was released. Please try again in a fresh session.
 ```
 
-The public log path `/tmp/a2a_listener_out.log` points to the successful attempt log. If startup fails before code release, per-attempt logs may also exist as:
+Detached verifier attempts write per-attempt child supervisor logs using this form:
 
 ```text
 /tmp/a2a_listener_out.<pid>.attempt1.log
@@ -406,6 +453,7 @@ Important role mapping:
 - `invite_...` codes are redeemed by the **JOIN** side
 - do not pass a `listen_...` code to `a2a-join-connect.sh`
 - if you use low-level scripts instead of the supervisor, the HOST must send the first message
+- after redeeming a `listen_...` code, the HOST should not wait for a HOST-side join notice; that system notice is delivered to the listener/JOIN side
 
 Important unattended-mode warning:
 

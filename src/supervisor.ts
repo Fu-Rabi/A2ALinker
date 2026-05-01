@@ -67,6 +67,7 @@ export interface ListenerSessionArtifact {
   source: 'local_cache';
   lastEvent?: string;
   error?: string | null;
+  notice?: string | null;
 }
 
 export interface HostSessionArtifact {
@@ -85,9 +86,28 @@ export interface HostSessionArtifact {
   source: 'local_cache';
   lastEvent?: string;
   error?: string | null;
+  notice?: string | null;
 }
 
-export type SessionArtifact = ListenerSessionArtifact | HostSessionArtifact;
+export interface JoinSessionArtifact {
+  mode: 'join';
+  status: string;
+  inviteCode: string | null;
+  brokerEndpoint: string;
+  runnerKind?: RunnerKind;
+  runnerCommand?: string;
+  headless: boolean;
+  sessionDir: string;
+  pid: number | null;
+  startedAt: string;
+  updatedAt: string;
+  source: 'local_cache';
+  lastEvent?: string;
+  error?: string | null;
+  notice?: string | null;
+}
+
+export type SessionArtifact = ListenerSessionArtifact | HostSessionArtifact | JoinSessionArtifact;
 
 interface RecentConversationTurn {
   speaker: string;
@@ -123,6 +143,7 @@ interface SessionArtifactPatch {
   pid?: number | null;
   lastEvent?: string;
   error?: string | null;
+  notice?: string | null;
 }
 
 interface SupervisorLogger {
@@ -148,6 +169,7 @@ interface SessionState {
   policyPath: string;
   listenerStatePath: string;
   hostStatePath: string;
+  joinStatePath: string;
   role: ConversationRole;
   mode: SupervisorMode;
   agentLabel: string;
@@ -510,6 +532,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
     status: 'starting',
     ...(resolved.mode === 'listen' ? { listenerCode: null } : {}),
     ...(resolved.mode === 'host' ? { attachedListenerCode: resolved.listenerCode ?? null, inviteCode: null } : {}),
+    ...(resolved.mode === 'join' ? { inviteCode: resolved.inviteCode ?? null } : {}),
     ...(resolved.runnerKind ? { runnerKind: resolved.runnerKind } : {}),
     ...(resolved.runnerCommand ? { runnerCommand: resolved.runnerCommand } : {}),
     headless: resolved.headless,
@@ -530,7 +553,11 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
       code: connect.code ?? null,
     });
     writeSessionArtifact(resolved, session, {
-      status: connect.status === 'waiting' ? 'waiting_for_host' : 'connected',
+      status: connect.status === 'waiting'
+        ? resolved.mode === 'join'
+          ? 'waiting_for_host_message'
+          : 'waiting_for_host'
+        : 'connected',
       ...(resolved.mode === 'listen' ? { listenerCode: connect.role === 'join' ? connect.code ?? null : null } : {}),
       ...(resolved.mode === 'host'
         ? {
@@ -538,6 +565,7 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
             inviteCode: connect.role === 'host' ? connect.code ?? null : null,
           }
         : {}),
+      ...(resolved.mode === 'join' ? { inviteCode: resolved.inviteCode ?? null } : {}),
       ...(resolved.runnerKind ? { runnerKind: resolved.runnerKind } : {}),
       ...(resolved.runnerCommand ? { runnerCommand: resolved.runnerCommand } : {}),
       headless: connect.headless,
@@ -624,7 +652,9 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
       }
       nextEvent = await getInitialHostEvent(resolved, session, connect.status);
     } else {
-      nextEvent = await runLoopScript(resolved, session, connect.role);
+      nextEvent = await runLoopScript(resolved, session, connect.role, {
+        surfaceJoinNotice: connect.status === 'waiting',
+      });
     }
 
     for (;;) {
@@ -681,6 +711,26 @@ export async function runSupervisor(options: SupervisorOptions): Promise<Session
             ...(nextEvent.kind === 'joined' ? { status: 'connected' } : {}),
             lastEvent: `system_${nextEvent.kind}`,
           });
+          if (nextEvent.kind === 'joined' && session.role === 'host' && !resolved.goal?.trim()) {
+            writeSessionMetadata(session, {
+              status: 'connected',
+              lastEvent: 'waiting_for_local_task',
+            });
+            writeSessionArtifact(resolved, session, {
+              status: 'connected',
+              pid: null,
+              lastEvent: 'waiting_for_local_task',
+              error: null,
+            });
+            emitUiEvent(resolved, {
+              type: 'notice',
+              level: 'info',
+              label: 'WAITING',
+              detail: 'Connection established. Waiting for a local human task before sending the first host message.',
+              layout: 'line',
+            });
+            return session;
+          }
           nextEvent = await runLoopScript(resolved, session, session.role);
           continue;
         }
@@ -956,6 +1006,7 @@ function createSessionState(options: MutableSupervisorOptions): SessionState {
   const policyPath = path.join(options.cwd, policyFileName);
   const listenerStatePath = path.join(options.cwd, '.a2a-listener-session.json');
   const hostStatePath = path.join(options.cwd, '.a2a-host-session.json');
+  const joinStatePath = path.join(options.cwd, '.a2a-join-session.json');
 
   const state: SessionState = {
     sessionId,
@@ -965,6 +1016,7 @@ function createSessionState(options: MutableSupervisorOptions): SessionState {
     policyPath,
     listenerStatePath,
     hostStatePath,
+    joinStatePath,
     role: options.mode === 'host' ? 'host' : 'join',
     mode: options.mode,
     agentLabel: options.agentLabel,
@@ -985,6 +1037,7 @@ function createSessionState(options: MutableSupervisorOptions): SessionState {
         policyPath,
         ...(options.mode === 'listen' ? { listenerStatePath } : {}),
         ...(options.mode === 'host' ? { hostStatePath } : {}),
+        ...(options.mode === 'join' ? { joinStatePath } : {}),
       },
       null,
       2,
@@ -1431,7 +1484,9 @@ async function getInitialHostEvent(
   connectionStatus: 'ready' | 'waiting',
 ): Promise<LoopEvent> {
   if (!options.goal?.trim()) {
-    return runLoopScript(options, session, 'host');
+    return runLoopScript(options, session, 'host', {
+      surfaceJoinNotice: connectionStatus === 'waiting',
+    });
   }
 
   const opening = `Hello from ${options.agentLabel}. Please help with this task: ${options.goal} [OVER]`;
@@ -1473,8 +1528,12 @@ async function runLoopScript(
   options: MutableSupervisorOptions,
   session: SessionState,
   role: ConversationRole,
+  loopOptions: { surfaceJoinNotice?: boolean } = {},
 ): Promise<LoopEvent> {
-  const result = await runScript(options, 'a2a-loop.sh', [role], session);
+  const env = loopOptions.surfaceJoinNotice
+    ? { ...options.env, A2A_SURFACE_JOIN_NOTICE: 'true' }
+    : options.env;
+  const result = await runScript(options, 'a2a-loop.sh', [role], session, env);
   return parseLoopEvent(result.stdout);
 }
 
@@ -1610,6 +1669,10 @@ export function getHostSessionArtifactPath(cwd: string): string {
   return path.join(cwd, '.a2a-host-session.json');
 }
 
+export function getJoinSessionArtifactPath(cwd: string): string {
+  return path.join(cwd, '.a2a-join-session.json');
+}
+
 export function readListenerSessionArtifact(cwd: string): ListenerSessionArtifact {
   const artifactPath = getListenerSessionArtifactPath(cwd);
   if (!fs.existsSync(artifactPath)) {
@@ -1626,6 +1689,15 @@ export function readHostSessionArtifact(cwd: string): HostSessionArtifact {
   }
   const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as HostSessionArtifact;
   return reconcileArtifactState(artifactPath, refreshArtifactLiveness(artifactPath, artifact)) as HostSessionArtifact;
+}
+
+export function readJoinSessionArtifact(cwd: string): JoinSessionArtifact {
+  const artifactPath = getJoinSessionArtifactPath(cwd);
+  if (!fs.existsSync(artifactPath)) {
+    throw new Error(`Join session state not found at ${artifactPath}.`);
+  }
+  const artifact = JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as JoinSessionArtifact;
+  return reconcileArtifactState(artifactPath, refreshArtifactLiveness(artifactPath, artifact)) as JoinSessionArtifact;
 }
 
 function refreshArtifactLiveness(artifactPath: string, artifact: SessionArtifact): SessionArtifact {
@@ -1650,41 +1722,52 @@ function refreshArtifactLiveness(artifactPath: string, artifact: SessionArtifact
 }
 
 function reconcileArtifactState(artifactPath: string, artifact: SessionArtifact): SessionArtifact {
-  if (artifact.mode !== 'host') {
+  if (artifact.mode === 'listen') {
     return artifact;
   }
   if (!artifact.sessionDir || ['closed', 'error', 'interrupted'].includes(artifact.status)) {
     return artifact;
   }
-  const pendingPath = path.join(artifact.sessionDir, 'a2a_host_pending_message.txt');
+  const pendingPath = path.join(artifact.sessionDir, `a2a_${artifact.mode}_pending_message.txt`);
   if (!fs.existsSync(pendingPath)) {
     return artifact;
   }
   const pending = fs.readFileSync(pendingPath, 'utf8').trim();
-  const cwd = path.dirname(artifactPath);
-  const listenerArtifactPath = getListenerSessionArtifactPath(cwd);
-  const listenerArtifact = fs.existsSync(listenerArtifactPath)
-    ? JSON.parse(fs.readFileSync(listenerArtifactPath, 'utf8')) as ListenerSessionArtifact
+  const listenerArtifact = artifact.mode === 'host'
+    ? (() => {
+      const cwd = path.dirname(artifactPath);
+      const listenerArtifactPath = getListenerSessionArtifactPath(cwd);
+      return fs.existsSync(listenerArtifactPath)
+        ? JSON.parse(fs.readFileSync(listenerArtifactPath, 'utf8')) as ListenerSessionArtifact
+        : null;
+    })()
     : null;
+  const pendingCloseEvent = classifyTerminalCloseOutput(pending);
   let next: SessionArtifact | null = null;
-  if (pending.startsWith('TIMEOUT_ROOM_CLOSED') || pending.includes('Session ended.') || pending.includes('has left the room. Session ended.')) {
+  if (pendingCloseEvent) {
     next = {
       ...artifact,
       status: 'closed',
-      lastEvent: 'room_closed',
+      lastEvent: pendingCloseEvent,
+      pid: null,
       updatedAt: new Date().toISOString(),
       error: null,
+      notice: null,
     };
   } else if (
-    pending.startsWith('ERROR: Token file not found')
-    && listenerArtifact?.status === 'closed'
+    artifact.mode === 'host'
+    && listenerArtifact !== null
+    && pending.startsWith('ERROR: Token file not found')
+    && listenerArtifact.status === 'closed'
   ) {
     next = {
       ...artifact,
       status: 'closed',
       lastEvent: listenerArtifact.lastEvent ?? 'system_closed',
+      pid: null,
       updatedAt: new Date().toISOString(),
       error: null,
+      notice: null,
     };
   } else if (pending.startsWith('WAIT_ALREADY_PENDING') || pending.startsWith('WAIT_BROKER_DRAINING') || pending.startsWith('WAIT_UNAUTHORIZED')) {
     const pendingEvent = pending.split('\n')[0] ?? 'WAIT_UNKNOWN';
@@ -1692,15 +1775,50 @@ function reconcileArtifactState(artifactPath: string, artifact: SessionArtifact)
       ...artifact,
       status: 'error',
       lastEvent: pendingEvent,
+      pid: null,
       updatedAt: new Date().toISOString(),
       error: pending,
+      notice: null,
     };
-  }
-  if (!next) {
-    return artifact;
+  } else {
+    const pendingRelayState = classifyPendingRelayState(artifact.mode, pending);
+    next = {
+      ...artifact,
+      status: pendingRelayState.status,
+      lastEvent: pendingRelayState.lastEvent,
+      pid: null,
+      updatedAt: new Date().toISOString(),
+      error: null,
+      notice: pendingRelayState.notice,
+    };
   }
   fs.writeFileSync(artifactPath, JSON.stringify(next, null, 2), 'utf8');
   return next;
+}
+
+function classifyPendingRelayState(
+  mode: 'host' | 'join',
+  pending: string,
+): { status: string; lastEvent: string; notice: string } {
+  if (
+    mode === 'host'
+    && pending.startsWith('MESSAGE_RECEIVED\n[SYSTEM]:')
+    && pending.toLowerCase().includes('joined')
+  ) {
+    return {
+      status: 'join_notice_pending',
+      lastEvent: 'system_joined',
+      notice: 'Partner joined. Relay this system notification to the human and ask for the first host message.',
+    };
+  }
+
+  return {
+    status: 'waiting_for_local_task',
+    lastEvent: 'waiting_for_local_task',
+    notice: mode === 'host'
+      ? 'A partner event is stored locally. Run a2a-chat.sh host to inspect it.'
+      : 'A host event is stored locally. Run a2a-chat.sh join to inspect it.',
+  };
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -1727,11 +1845,15 @@ function writeSessionArtifact(
   session: SessionState,
   patch: SessionArtifactPatch,
 ): void {
-  if (options.mode !== 'listen' && options.mode !== 'host') {
+  if (options.mode !== 'listen' && options.mode !== 'host' && options.mode !== 'join') {
     return;
   }
 
-  const artifactPath = options.mode === 'listen' ? session.listenerStatePath : session.hostStatePath;
+  const artifactPath = options.mode === 'listen'
+    ? session.listenerStatePath
+    : options.mode === 'host'
+      ? session.hostStatePath
+      : session.joinStatePath;
   const current = fs.existsSync(artifactPath)
     ? (JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as Partial<SessionArtifact>)
     : {};
@@ -1754,6 +1876,7 @@ function writeSessionArtifact(
       : {}),
     ...(patch.lastEvent !== undefined ? { lastEvent: patch.lastEvent } : current.lastEvent !== undefined ? { lastEvent: current.lastEvent } : {}),
     ...(patch.error !== undefined ? { error: patch.error } : current.error !== undefined ? { error: current.error } : {}),
+    ...(patch.notice !== undefined ? { notice: patch.notice } : current.notice !== undefined ? { notice: current.notice } : {}),
   };
   const next: SessionArtifact = options.mode === 'listen'
     ? {
@@ -1761,11 +1884,17 @@ function writeSessionArtifact(
         ...shared,
         listenerCode: patch.listenerCode ?? ('listenerCode' in current ? current.listenerCode ?? null : null),
       }
-    : {
+    : options.mode === 'host'
+      ? {
         mode: 'host',
         ...shared,
         attachedListenerCode: patch.attachedListenerCode ?? ('attachedListenerCode' in current ? current.attachedListenerCode ?? null : options.listenerCode ?? null),
         inviteCode: patch.inviteCode ?? ('inviteCode' in current ? current.inviteCode ?? null : null),
+      }
+      : {
+        mode: 'join',
+        ...shared,
+        inviteCode: patch.inviteCode ?? ('inviteCode' in current ? current.inviteCode ?? null : options.inviteCode ?? null),
       };
   fs.writeFileSync(artifactPath, JSON.stringify(next, null, 2), 'utf8');
 }
@@ -1886,7 +2015,21 @@ async function runShellCommand(
 }
 
 function installSignalCleanup(options: MutableSupervisorOptions, session: SessionState): () => void {
+  let isHandlingSignal = false;
   const handler = (signal: NodeJS.Signals) => {
+    if (signal === 'SIGHUP' && options.mode === 'listen' && options.headless) {
+      writeSessionMetadata(session, {
+        lastIgnoredSignal: signal,
+      });
+      return;
+    }
+    if (isHandlingSignal) {
+      return;
+    }
+    isHandlingSignal = true;
+    if (options.mode === 'listen') {
+      runLeaveScript(options, 'listen', 'force');
+    }
     writeSessionMetadata(session, {
       status: 'interrupted',
       signal,
@@ -1915,7 +2058,7 @@ function cleanupLocalSession(options: MutableSupervisorOptions, session: Session
 
 function runLeaveScript(
   options: MutableSupervisorOptions,
-  role: ConversationRole,
+  role: ConversationRole | 'listen',
   authorization: 'human' | 'force' = 'human',
 ): void {
   const leaveScript = path.join(options.scriptDir, 'a2a-leave.sh');
@@ -1961,13 +2104,41 @@ function extractSystemBody(output: string): string | null {
   return withoutPrefix;
 }
 
+function classifyTerminalCloseSystemMessage(body: string): 'room_closed' | 'system_closed' | null {
+  const normalized = body.replace(/\r/g, '').trim();
+  if (!normalized.startsWith('[SYSTEM]:')) {
+    return null;
+  }
+  if (normalized.includes('has left the room. Session ended.')) {
+    return 'room_closed';
+  }
+  if (
+    normalized.includes('has closed the session.')
+    || normalized.includes('Session ended.')
+    || normalized.includes('Session expired due to inactivity.')
+    || normalized.includes('Session was closed by broker policy.')
+  ) {
+    return 'system_closed';
+  }
+  return null;
+}
+
+function classifyTerminalCloseOutput(output: string): 'room_closed' | 'system_closed' | null {
+  const trimmed = output.trim();
+  if (trimmed.startsWith('TIMEOUT_ROOM_CLOSED')) {
+    return 'room_closed';
+  }
+  const systemBody = extractSystemBody(trimmed);
+  return systemBody ? classifyTerminalCloseSystemMessage(systemBody) : null;
+}
+
 function classifySystemMessage(body: string): 'joined' | 'closed' | 'paused' | 'alert' | 'other' {
+  if (classifyTerminalCloseSystemMessage(body) !== null) {
+    return 'closed';
+  }
   const lower = body.toLowerCase();
   if (lower.includes('has joined') || lower.includes('session is live')) {
     return 'joined';
-  }
-  if (lower.includes('has closed the session') || lower.includes('session ended') || lower.includes('disconnected')) {
-    return 'closed';
   }
   if (lower.includes('both agents have signaled standby') || lower.includes('human must intervene')) {
     return 'paused';

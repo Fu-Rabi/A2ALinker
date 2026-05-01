@@ -95,7 +95,7 @@ export function createHttpRuntime({
       return;
     }
 
-    const resolved = waiters.resolveIfActive(recipientLookupId, message.text);
+    const resolved = waiters.resolveIfActive(recipientLookupId, message);
     if (resolved === 'resolved') {
       await store.clearWaiterOwner(token, config.instanceId);
       return;
@@ -502,7 +502,15 @@ export function createHttpRuntime({
     }, config.waitTimeoutMs);
     timer.unref();
 
-    if (!waiters.register(waiterLookupId, { token, res, timer })) {
+    if (!waiters.register(waiterLookupId, {
+      token,
+      res,
+      timer,
+      onUnfinishedDelivery: (delivery) => {
+        void store.requeueInboxMessageFront(token, delivery)
+          .finally(() => store.clearWaiterOwner(token, config.instanceId));
+      },
+    })) {
       clearTimeout(timer);
       runtimeLogger.warn('wait_rejected', { reason: 'already_pending' });
       res.status(409).json({ error: 'Wait already pending' });

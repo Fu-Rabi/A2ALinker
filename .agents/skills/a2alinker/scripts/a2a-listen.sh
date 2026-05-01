@@ -8,15 +8,17 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/a2a-common.sh"
 a2a_prompt_for_debug_if_interactive
-BASE_URL="$(a2a_resolve_base_url)"
+STALE_BASE_URL="$(a2a_resolve_saved_base_url_for_role join)"
+BASE_URL="$(a2a_resolve_fresh_base_url)"
 
 # Clean up stale session from previous run (backgrounded to avoid blocking)
 if [ -f /tmp/a2a_join_token ] && [ -s /tmp/a2a_join_token ]; then
   a2a_debug_log "join" "listen:cleanup old_token_present=1"
 fi
-a2a_cleanup_stale_join_token "$BASE_URL"
+a2a_cleanup_stale_join_token "$STALE_BASE_URL"
 
 HEADLESS="${1:-false}"
+a2a_human_status "Starting listener..."
 a2a_debug_log "join" "listen:start headless=$HEADLESS base_url=$BASE_URL"
 
 # One-shot setup: register + create room in 1 round-trip
@@ -55,5 +57,5 @@ a2a_debug_log "join" "listen:setup_complete listener_code=$LISTEN_CODE"
 echo "ROLE: join"
 echo "LISTENER_CODE: $LISTEN_CODE"
 echo "HEADLESS_SET: $HEADLESS"
-echo 'NEXT_STEP: Keep the supervisor running, or run bash .agents/skills/a2alinker/scripts/a2a-loop.sh join to stay attached and receive close notifications.'
+echo 'NEXT_STEP: Keep the listener running so the host can connect. To observe later session events, stay attached to the listener.'
 exit 0
