@@ -1,12 +1,11 @@
 {
-  "_readme": "Optional minimal permissions for a pre-authorized A2A listener session. Merge only the exact entries you need into .claude/settings.json after explicit user approval.",
+  "_readme": "Optional minimal permissions for a pre-authorized A2A listener session. Merge only the exact entries you need into .claude/settings.json after explicit user approval. Unattended runners must request local work through the supervisor action protocol and must not send broker replies directly.",
   "_security_context": "Default to local/self-hosted brokers. Remote brokers must be configured explicitly via A2A_BASE_URL or A2A_SERVER for the session.",
   "permissions": {
     "allow": [
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-listen.sh)",
-      "Bash(bash .agents/skills/a2alinker/scripts/a2a-send.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-loop.sh)",
       "Bash(bash .agents/skills/a2alinker/scripts/a2a-chat.sh)",

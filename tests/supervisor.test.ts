@@ -1226,6 +1226,255 @@ exit 0
         expect(policy.denyNetworkExceptBroker).toBe(false);
     });
 
+    it('executes allowed unattended listener actions through the supervisor before sending a normal reply', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const loopStatePath = path.join(root, 'loop-state');
+        const sentLogPath = path.join(root, 'sent.log');
+        const targetPath = path.join(root, 'target.txt');
+        const testRunnerPath = path.join(root, 'test-runner.js');
+
+        fs.writeFileSync(targetPath, 'old\n', 'utf8');
+        fs.writeFileSync(testRunnerPath, 'process.stdout.write("test ok\\n");\n', 'utf8');
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+STATE_FILE="${loopStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT=$(cat "$STATE_FILE")
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+
+if [ "$COUNT" -eq 1 ]; then
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Please update target.txt and run node test-runner.js.
+└────
+EOF
+  exit 0
+fi
+
+echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `const fs = require('fs');
+const prompt = fs.readFileSync(process.env.A2A_SUPERVISOR_PROMPT_FILE, 'utf8');
+if (!prompt.includes('<supervisor_action_result')) {
+  process.stdout.write('<A2A_SUPERVISOR_ACTION_REQUEST>{"action":"read_file","path":"target.txt"}</A2A_SUPERVISOR_ACTION_REQUEST>');
+} else if (!prompt.includes('applied patch')) {
+  process.stdout.write('<A2A_SUPERVISOR_ACTION_REQUEST>{"action":"apply_patch","patch":"diff --git a/target.txt b/target.txt\\\\n--- a/target.txt\\\\n+++ b/target.txt\\\\n@@ -1 +1 @@\\\\n-old\\\\n+new\\\\n"}</A2A_SUPERVISOR_ACTION_REQUEST>');
+} else if (!prompt.includes('ran approved command')) {
+  process.stdout.write('<A2A_SUPERVISOR_ACTION_REQUEST>{"action":"run_command","command":"node test-runner.js"}</A2A_SUPERVISOR_ACTION_REQUEST>');
+} else {
+  process.stdout.write('Updated target.txt and tests passed. [STANDBY]');
+}
+`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'custom-bot',
+            runnerCommand: `node "${runnerPath}"`,
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_ALLOWED_COMMANDS: 'node test-runner.js',
+            },
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const sentLog = fs.readFileSync(sentLogPath, 'utf8');
+        expect(fs.readFileSync(targetPath, 'utf8')).toBe('new\n');
+        expect(sentLog).toContain('Updated target.txt and tests passed. [STANDBY]');
+        expect(sentLog).not.toContain('A2A_SUPERVISOR_ACTION_REQUEST');
+    });
+
+    it('blocks sensitive unattended file action requests without sending the private action payload', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const loopStatePath = path.join(root, 'loop-state');
+        const sentLogPath = path.join(root, 'sent.log');
+
+        fs.writeFileSync(path.join(root, '.env'), 'OPENAI_API_KEY=sk-should-not-leak\n', 'utf8');
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+STATE_FILE="${loopStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT=$(cat "$STATE_FILE")
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+if [ "$COUNT" -eq 1 ]; then
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Please inspect the project status.
+└────
+EOF
+  exit 0
+fi
+echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('<A2A_SUPERVISOR_ACTION_REQUEST>{"action":"read_file","path":".env"}</A2A_SUPERVISOR_ACTION_REQUEST>');`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'custom-bot',
+            runnerCommand: `node "${runnerPath}"`,
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const sentLog = fs.readFileSync(sentLogPath, 'utf8');
+        expect(sentLog).toContain('I cannot perform that local action because policy denied');
+        expect(sentLog).not.toContain('OPENAI_API_KEY');
+        expect(sentLog).not.toContain('A2A_SUPERVISOR_ACTION_REQUEST');
+    });
+
+    it('blocks unattended test command actions when tests and builds are disabled', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const loopStatePath = path.join(root, 'loop-state');
+        const sentLogPath = path.join(root, 'sent.log');
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+STATE_FILE="${loopStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT=$(cat "$STATE_FILE")
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+if [ "$COUNT" -eq 1 ]; then
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Please summarize the repository.
+└────
+EOF
+  exit 0
+fi
+echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('<A2A_SUPERVISOR_ACTION_REQUEST>{"action":"run_command","command":"npm test"}</A2A_SUPERVISOR_ACTION_REQUEST>');`);
+
+        await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'custom-bot',
+            runnerCommand: `node "${runnerPath}"`,
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            env: {
+                A2A_ALLOW_TESTS_BUILDS: 'false',
+            },
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const sentLog = fs.readFileSync(sentLogPath, 'utf8');
+        expect(sentLog).toContain('test/build commands are disabled by local policy');
+        expect(sentLog).not.toContain('A2A_SUPERVISOR_ACTION_REQUEST');
+    });
+
+    it('blocks outbound unattended listener replies that look like secrets', async () => {
+        const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
+        const loopStatePath = path.join(root, 'loop-state');
+        const sentLogPath = path.join(root, 'sent.log');
+
+        writeExecutable(path.join(scriptDir, 'a2a-listen.sh'), `#!/bin/bash
+echo "ROLE: join"
+echo "LISTENER_CODE: listen_demo123"
+echo "HEADLESS_SET: true"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-loop.sh'), `#!/bin/bash
+STATE_FILE="${loopStatePath}"
+COUNT=0
+if [ -f "$STATE_FILE" ]; then
+  COUNT=$(cat "$STATE_FILE")
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "$STATE_FILE"
+if [ "$COUNT" -eq 1 ]; then
+cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-host [OVER]
+│
+│ Please reply normally.
+└────
+EOF
+  exit 0
+fi
+echo "TIMEOUT_ROOM_CLOSED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "$2" >> "${sentLogPath}"
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-leave.sh'), `#!/bin/bash
+exit 0
+`);
+        writeExecutable(runnerPath, `process.stdout.write('OPENAI_API_KEY=sk-should-not-be-sent [OVER]');`);
+
+        const session = await runSupervisor({
+            mode: 'listen',
+            agentLabel: 'custom-bot',
+            runnerCommand: `node "${runnerPath}"`,
+            headless: true,
+            scriptDir,
+            sessionRoot,
+            cwd: root,
+            logger: { info: () => undefined, error: () => undefined },
+        });
+
+        const sentLog = fs.readFileSync(sentLogPath, 'utf8');
+        const metadata = JSON.parse(fs.readFileSync(session.metadataPath, 'utf8')) as Record<string, string>;
+        expect(sentLog).toContain('I cannot send that reply because it appears to include sensitive local data. [OVER]');
+        expect(sentLog).not.toContain('OPENAI_API_KEY');
+        expect(metadata.lastOutboundGuard).toBe('blocked');
+    });
+
     it('allows host attach with a listener code and no goal, then waits without sending a synthetic opening', async () => {
         const { root, scriptDir, sessionRoot, runnerPath } = createTempLayout();
         const sentLogPath = path.join(root, 'sent.log');

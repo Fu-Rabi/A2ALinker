@@ -338,6 +338,66 @@ fi
         }
     });
 
+    it('ignores a stale all-standby pause after sending a new active message', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-stale-standby-'));
+        const scriptDir = path.join(root, 'scripts');
+        const statePath = path.join(root, 'wait-state');
+        fs.mkdirSync(scriptDir, { recursive: true });
+
+        fs.copyFileSync(realScriptPath, path.join(scriptDir, 'a2a-loop.sh'));
+        fs.copyFileSync(realCommonPath, path.join(scriptDir, 'a2a-common.sh'));
+        fs.chmodSync(path.join(scriptDir, 'a2a-loop.sh'), 0o755);
+        fs.chmodSync(path.join(scriptDir, 'a2a-common.sh'), 0o755);
+
+        writeExecutable(path.join(scriptDir, 'a2a-send.sh'), `#!/bin/bash
+echo "DELIVERED"
+`);
+        writeExecutable(path.join(scriptDir, 'a2a-wait-message.sh'), `#!/bin/bash
+COUNT=0
+if [ -f "${statePath}" ]; then
+  COUNT="$(cat "${statePath}")"
+fi
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${statePath}"
+if [ "$COUNT" -eq 1 ]; then
+  cat <<'EOF'
+MESSAGE_RECEIVED
+[SYSTEM]: Both agents have signaled STANDBY. Session paused. A human must intervene to resume.
+EOF
+else
+  cat <<'EOF'
+MESSAGE_RECEIVED
+┌─ Agent-join [OVER]
+│
+│ Fresh reply
+└────
+EOF
+fi
+`);
+
+        try {
+            const result = withHostToken('tok_test_host', () => spawnSync(
+                'bash',
+                [path.join(scriptDir, 'a2a-loop.sh'), 'host', 'New task [OVER]'],
+                {
+                    encoding: 'utf8',
+                    env: {
+                        ...process.env,
+                        A2A_DEBUG: '1',
+                    },
+                },
+            ));
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('DELIVERED');
+            expect(result.stdout).toContain('Fresh reply');
+            expect(result.stdout).not.toContain('Both agents have signaled STANDBY');
+            expect(fs.readFileSync(statePath, 'utf8').trim()).toBe('2');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('surfaces five-minute inactivity by default for supervisor callers', () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-loop-inactivity-default-'));
         const scriptDir = path.join(root, 'scripts');

@@ -23,6 +23,7 @@ WAIT_CONFLICT_COUNT=0
 SURFACE_JOIN_NOTICE=false
 SURFACE_INACTIVITY=true
 READ_STDIN=false
+ACTIVE_OUTBOUND=false
 TOKEN_FILE=""
 INFLIGHT_PATH=""
 LOOP_MAX_SECONDS="${A2A_LOOP_MAX_SECONDS:-}"
@@ -179,6 +180,11 @@ loop_payload_is_reply_seeking() {
   return 1
 }
 
+loop_result_is_all_standby_pause() {
+  local output="$1"
+  printf '%s' "$output" | grep -Fq '[SYSTEM]: Both agents have signaled STANDBY. Session paused.'
+}
+
 guard_standby_artifact_send() {
   local payload="$1"
   local signal body
@@ -286,6 +292,9 @@ if [ "$READ_STDIN" = true ]; then
   MESSAGE="$(cat)"
   MESSAGE="$(normalize_loop_message "$MESSAGE")"
   guard_standby_artifact_send "$MESSAGE" || exit 1
+  if [ "$(loop_message_signal "$MESSAGE")" != "STANDBY" ]; then
+    ACTIVE_OUTBOUND=true
+  fi
   a2a_debug_log "$ROLE" "loop:send stdin=1"
   SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" "$MESSAGE")
   echo "$SEND_RESULT"
@@ -299,6 +308,9 @@ if [ "$READ_STDIN" = true ]; then
   fi
 elif [ -n "$MESSAGE" ]; then
   guard_standby_artifact_send "$MESSAGE" || exit 1
+  if [ "$(loop_message_signal "$MESSAGE")" != "STANDBY" ]; then
+    ACTIVE_OUTBOUND=true
+  fi
   a2a_debug_log "$ROLE" "loop:send message_present=yes"
   SEND_RESULT=$(bash "$SCRIPT_DIR/a2a-send.sh" "$ROLE" "$MESSAGE")
   echo "$SEND_RESULT"
@@ -344,6 +356,12 @@ while true; do
           echo "$SECOND_MSG"
           exit 0
         fi
+        loop_continue_or_timeout
+        continue
+      fi
+
+      if [ "$ACTIVE_OUTBOUND" = true ] && loop_result_is_all_standby_pause "$RESULT"; then
+        a2a_debug_log "$ROLE" "loop:skip_stale_standby_pause_after_active_send"
         loop_continue_or_timeout
         continue
       fi

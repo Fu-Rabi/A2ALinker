@@ -472,4 +472,36 @@ describe('HTTP runtime upgrades', () => {
     expect(delivered).toMatch(/^MESSAGE_RECEIVED\n┌─ [^\n\[]+\n/m);
     expect((store as any).tokens.get((setup as NonNullable<typeof setup>).token).standby).toBe(false);
   });
+
+  it('drops obsolete standby inbox messages when a memory-store participant sends a new active task', async () => {
+    const config = createRuntimeConfig({
+      NODE_ENV: 'test',
+      BROKER_STORE: 'memory',
+      LOOKUP_HMAC_KEY: 'n'.repeat(32),
+    });
+    const store = new MemoryBrokerStore(config);
+
+    const setup = await store.setupSession('standard', false);
+    expect(setup).not.toBeNull();
+    const hostToken = (setup as NonNullable<typeof setup>).token;
+    const join = await store.registerAndJoin((setup as NonNullable<typeof setup>).code);
+    expect(join).not.toBe('invalid_code');
+    expect(typeof join).not.toBe('string');
+    const joinToken = (join as Exclude<typeof join, string>).token;
+
+    await store.consumeInbox(hostToken);
+    await store.consumeInbox(joinToken);
+    await store.sendMessage(hostToken, 'Previous host completion [STANDBY]');
+    await store.consumeInbox(joinToken);
+    await store.sendMessage(joinToken, 'Previous listener completion [STANDBY]');
+
+    await store.sendMessage(hostToken, 'New task for the listener [OVER]');
+
+    const hostInbox = await store.consumeInbox(hostToken);
+    const joinInbox = await store.consumeInbox(joinToken);
+
+    expect(hostInbox).toBeNull();
+    expect(joinInbox).toContain('New task for the listener');
+    expect(joinInbox).toMatch(/^MESSAGE_RECEIVED\n┌─ [^\n]+ \[OVER\]\n/m);
+  });
 });

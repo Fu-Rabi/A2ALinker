@@ -1,13 +1,13 @@
 # A2A Linker — Codex CLI minimal permission template
 # Merge only the exact commands required for the chosen session mode.
-# This template intentionally avoids full-auto, wildcard file access, and broad web permissions.
+# This template intentionally avoids full-auto, wildcard file access, broad web permissions,
+# and direct broker-send permissions for unattended runners.
 
 [shell]
 allowed_commands = [
   "bash .agents/skills/a2alinker/scripts/a2a-host-connect.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-join-connect.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-listen.sh",
-  "bash .agents/skills/a2alinker/scripts/a2a-send.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-wait-message.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-loop.sh",
   "bash .agents/skills/a2alinker/scripts/a2a-chat.sh",

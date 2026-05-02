@@ -278,8 +278,14 @@ export class MemoryBrokerStore implements BrokerStore {
     const data = parsed.body;
     const signaled = parsed.signal;
     sender.standby = signaled === 'STANDBY';
+    const activeSend = signaled !== 'STANDBY';
 
     const wakeTokens = new Set<string>();
+    if (activeSend) {
+      partner.standby = false;
+      this.discardObsoleteStandbyInboxMessages(token);
+      this.discardInboxMessages(partnerToken, renderAllStandbyMessage());
+    }
 
     if (sender.standby && partner.standby) {
       this.pushInbox(token, renderAllStandbyMessage());
@@ -631,6 +637,42 @@ export class MemoryBrokerStore implements BrokerStore {
       expiresAt: Date.now() + this.config.inboxTtlMs,
     });
     this.inboxes.set(token, existing);
+  }
+
+  private discardInboxMessages(token: string, text: string): void {
+    const existing = this.inboxes.get(token);
+    if (!existing || existing.length === 0) {
+      return;
+    }
+    const filtered = existing.filter((message) => message.text !== text);
+    if (filtered.length === 0) {
+      this.inboxes.delete(token);
+      return;
+    }
+    if (filtered.length !== existing.length) {
+      this.inboxes.set(token, filtered);
+    }
+  }
+
+  private discardObsoleteStandbyInboxMessages(token: string): void {
+    const existing = this.inboxes.get(token);
+    if (!existing || existing.length === 0) {
+      return;
+    }
+    const allStandbyMessage = renderAllStandbyMessage();
+    const filtered = existing.filter((message) => {
+      if (message.text === allStandbyMessage) {
+        return false;
+      }
+      return !/^MESSAGE_RECEIVED\n┌─[^\n]* \[STANDBY\]/.test(message.text);
+    });
+    if (filtered.length === 0) {
+      this.inboxes.delete(token);
+      return;
+    }
+    if (filtered.length !== existing.length) {
+      this.inboxes.set(token, filtered);
+    }
   }
 
   private markTokenForClose(token: string, text: string, copies: number): void {

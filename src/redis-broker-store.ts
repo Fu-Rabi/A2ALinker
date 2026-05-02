@@ -263,8 +263,17 @@ export class RedisBrokerStore implements BrokerStore {
     const data = parsed.body;
     const signaled = parsed.signal;
     sender.standby = signaled === 'STANDBY';
+    const activeSend = signaled !== 'STANDBY';
 
     const wakeTokens = new Set<string>();
+    if (activeSend) {
+      partner.standby = false;
+      await Promise.all([
+        this.discardObsoleteStandbyInboxMessages(token),
+        this.discardInboxMessages(partnerToken, renderAllStandbyMessage()),
+      ]);
+    }
+
     if (sender.standby && partner.standby) {
       await this.pushInbox(token, renderAllStandbyMessage());
       await this.pushInbox(partnerToken, renderAllStandbyMessage());
@@ -612,6 +621,60 @@ export class RedisBrokerStore implements BrokerStore {
   private async pushInbox(token: string, text: string, closeAfterDelivery: boolean = false): Promise<void> {
     await this.client.rPush(this.inboxKey(token), JSON.stringify({ text, closeAfterDelivery } satisfies InboxMessage));
     await this.client.pExpire(this.inboxKey(token), this.config.inboxTtlMs);
+  }
+
+  private async discardInboxMessages(token: string, text: string): Promise<void> {
+    const key = this.inboxKey(token);
+    const payloads = await this.client.lRange(key, 0, -1);
+    if (payloads.length === 0) {
+      return;
+    }
+
+    const kept = payloads.filter((payload) => {
+      try {
+        const message = JSON.parse(payload) as InboxMessage;
+        return message.text !== text;
+      } catch {
+        return true;
+      }
+    });
+    if (kept.length === payloads.length) {
+      return;
+    }
+    await this.client.del(key);
+    if (kept.length > 0) {
+      await this.client.rPush(key, kept);
+      await this.client.pExpire(key, this.config.inboxTtlMs);
+    }
+  }
+
+  private async discardObsoleteStandbyInboxMessages(token: string): Promise<void> {
+    const key = this.inboxKey(token);
+    const payloads = await this.client.lRange(key, 0, -1);
+    if (payloads.length === 0) {
+      return;
+    }
+
+    const allStandbyMessage = renderAllStandbyMessage();
+    const kept = payloads.filter((payload) => {
+      try {
+        const message = JSON.parse(payload) as InboxMessage;
+        if (message.text === allStandbyMessage) {
+          return false;
+        }
+        return !/^MESSAGE_RECEIVED\n┌─[^\n]* \[STANDBY\]/.test(message.text);
+      } catch {
+        return true;
+      }
+    });
+    if (kept.length === payloads.length) {
+      return;
+    }
+    await this.client.del(key);
+    if (kept.length > 0) {
+      await this.client.rPush(key, kept);
+      await this.client.pExpire(key, this.config.inboxTtlMs);
+    }
   }
 
   private async markTokenForClose(token: string, text: string, copies: number): Promise<void> {

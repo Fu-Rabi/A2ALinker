@@ -16,6 +16,7 @@ describe('A2A skill permission templates', () => {
 
         expect(templateConfig).not.toContain('approval_policy = "full-auto"');
         expect(commands).toContain('bash .agents/skills/a2alinker/scripts/a2a-supervisor.sh');
+        expect(commands).not.toContain('bash .agents/skills/a2alinker/scripts/a2a-send.sh');
         expect(commands).not.toContain('bash .agents/skills/a2alinker/scripts/a2a-leave.sh');
         expect(commands.some((entry) => entry.includes('*'))).toBe(false);
         expect(commands).not.toContain('echo * >> ~/.a2a_headless.log');
@@ -29,10 +30,12 @@ describe('A2A skill permission templates', () => {
         expect(claudeTemplate).not.toContain('FileSystemWrite(path:*)');
         expect(claudeTemplate).not.toContain('WebFetch(domain:*)');
         expect(claudeTemplate).not.toContain('echo *');
+        expect(claudeTemplate).not.toContain('a2a-send.sh');
         expect(claudeTemplate).not.toContain('a2a-leave.sh');
         expect(geminiTemplate).not.toContain('write_file(*)');
         expect(geminiTemplate).not.toContain('curl https://*');
         expect(geminiTemplate).not.toContain('echo *');
+        expect(geminiTemplate).not.toContain('a2a-send.sh');
         expect(geminiTemplate).not.toContain('a2a-leave.sh');
     });
 
