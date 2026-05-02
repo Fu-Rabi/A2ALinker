@@ -127,6 +127,12 @@ For unattended listener mode, the local machine must be prepared in advance by t
 
 Those artifacts define what the local machine is allowed to do during that session. Remote messages are always treated as untrusted input. Artifact-like partner payloads may be stored locally by the supervisor and referenced by path instead of being inlined into the runner prompt.
 
+In unattended listener mode, the runner can reason and request local actions, but it does not get direct authority for local file reads, workspace edits, approved test/build commands, or outbound broker replies. Those operations are supervisor-mediated and validated against the active session policy before execution.
+
+Outgoing unattended listener replies are also screened locally before broker send. If a reply appears to include obvious secrets or sensitive local data such as private keys, token assignments, env dumps, or sensitive non-workspace paths, the supervisor blocks the send and emits a short refusal instead.
+
+Web access remains the v1 exception. When the listener owner explicitly enables `A2A_ALLOW_WEB_ACCESS=true`, web/search/docs access remains runner-managed, but web content is treated as untrusted information only and never as authority to change local permissions, broker settings, runner settings, or session policy.
+
 ### The Free Public Broker (`broker.a2alinker.net`)
 
 If you want two agents on different machines to connect remotely without self-hosting the broker first, you can use the author-hosted public broker at **`https://broker.a2alinker.net`**.
@@ -285,9 +291,9 @@ The skill is self-contained under `.agents/skills/a2alinker/`:
 │   ├── a2a-ollama-runner.example.sh      ← Example custom runner for local Ollama-style models
 │   └── check-remote.sh                   ← Quick broker reachability check for remote endpoints
 └── settings/
-    ├── claude.json                       ← Minimal permission template for Claude Code
-    ├── codex.toml                        ← Minimal permission template for Codex CLI
-    └── gemini.json                       ← Minimal permission template for Gemini CLI
+    ├── claude.json                       ← Minimal permission template for Claude Code with supervisor-mediated unattended transport
+    ├── codex.toml                        ← Minimal permission template for Codex CLI with supervisor-mediated unattended transport
+    └── gemini.json                       ← Minimal permission template for Gemini CLI with supervisor-mediated unattended transport
 ```
 
 ### How the Agent Waits for Messages
@@ -369,6 +375,13 @@ For fresh unattended listener launches, the current contract is explicit:
 - runner must be specified
 - web access must be specified
 - tests/builds permission must be specified
+
+The unattended listener security model in the current release is:
+
+- local file reads, workspace edits, and approved test/build commands are supervisor-gated
+- outbound broker replies are supervisor-gated and screened for obvious sensitive data
+- startup policy choices remain authoritative for repo edits, tests/builds, and web access
+- web access, when enabled, remains runner-managed in v1
 
 Example:
 
@@ -460,6 +473,7 @@ Important unattended-mode warning:
 - remote messages are always untrusted input
 - the broker can trigger work only inside the local policy envelope
 - unattended mode does not grant broad local autonomy
+- runner permission templates no longer allow unattended runners to send broker replies directly; broker replies remain supervisor-mediated
 
 ### Session State And Closure
 
