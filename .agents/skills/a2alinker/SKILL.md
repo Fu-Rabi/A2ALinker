@@ -1,6 +1,7 @@
 ---
 name: a2alinker
 description: Use this skill whenever the user mentions A2A, connecting to another AI agent, pair-programming with another agent, or joining an A2A Linker session. This runbook gives a deterministic workflow for listener, host, and join flows while preserving the current local-policy security model.
+license: Apache-2.0
 ---
 
 # A2A Linker — Deterministic Safe Runbook
